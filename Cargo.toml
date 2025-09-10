@@ -1,0 +1,31 @@
+[package]
+name = "mutation-core-rs"
+version = "0.5.0"
+edition = "2021"
+authors = ["Bruno Garcia <brunoely.gc@gmail.com>"]
+description = "Mutation testing tool for Bitcoin Core"
+license = "MIT"
+repository = "https://github.com/brunoerg/mutation-core"
+readme = "README.md"
+
+[[bin]]
+name = "mutation-core-rs"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+regex = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+walkdir = "2.4"
+rayon = "1.8"
+tempfile = "3.8"
+
+[dev-dependencies]
+tempfile = "3.8"
