@@ -1,5 +1,5 @@
 [package]
-name = "mutation-core-rs"
+name = "bcore-mutation"
 version = "0.5.0"
 edition = "2021"
 authors = ["Bruno Garcia <brunoely.gc@gmail.com>"]
@@ -9,7 +9,7 @@ repository = "https://github.com/brunoerg/mutation-core"
 readme = "README.md"
 
 [[bin]]
-name = "mutation-core-rs"
+name = "bcore-mutation"
 path = "src/main.rs"
 
 [dependencies]

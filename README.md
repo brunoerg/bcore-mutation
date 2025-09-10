@@ -2,7 +2,7 @@
 
 **A mutation testing tool for Bitcoin Core, rewritten in Rust**.
 
-This is a complete rewrite of the original Python mutation-core-rstool, offering improved performance, better error handling, and enhanced concurrency.
+This is a complete rewrite of the original Python bcore-mutationtool, offering improved performance, better error handling, and enhanced concurrency.
 
 "Mutation testing (or mutation analysis or program mutation) is used to design new software tests and evaluate the quality of existing software tests. Mutation testing involves modifying a program in small ways. Each mutated version is called a mutant and tests detect and reject mutants by causing the behaviour of the original version to differ from the mutant. This is called killing the mutant. Test suites are measured by the percentage of mutants that they kill." (Wikipedia)
 
@@ -29,7 +29,7 @@ All original features from the Python version:
 
 ```bash
 git clone <repository>
-cd mutation-core-rs
+cd bcore-mutation
 cargo build --release
 cargo install --path .
 ```
@@ -41,20 +41,20 @@ cargo install --path .
 ```bash
 cd bitcoin
 git checkout branch # if needed
-mutation-core-rsmutate
-mutation-core-rsanalyze # use -j=N to set number of compilation jobs
+bcore-mutationmutate
+bcore-mutationanalyze # use -j=N to set number of compilation jobs
 ```
 
 ### Generate Mutants for Specific File
 
 ```bash
-mutation-core-rsmutate -f src/wallet/wallet.cpp
+bcore-mutationmutate -f src/wallet/wallet.cpp
 ```
 
 ### Generate Mutants for Specific PR
 
 ```bash
-mutation-core-rsmutate -p 12345
+bcore-mutationmutate -p 12345
 ```
 
 ### Create Skip Lines Configuration
@@ -71,7 +71,7 @@ Create a JSON file specifying lines to skip:
 Use with:
 
 ```bash
-mutation-core-rsmutate -p 12345 --skip-lines skip.json
+bcore-mutationmutate -p 12345 --skip-lines skip.json
 ```
 
 ### Advanced Options
@@ -79,31 +79,31 @@ mutation-core-rsmutate -p 12345 --skip-lines skip.json
 Create only one mutant per line (faster analysis):
 
 ```bash
-mutation-core-rsmutate -p 12345 --one-mutant
+bcore-mutationmutate -p 12345 --one-mutant
 ```
 
 Create mutants only for tests:
 
 ```bash
-mutation-core-rsmutate -p 12345 --test-only
+bcore-mutationmutate -p 12345 --test-only
 ```
 
 Use coverage file to create mutants only for covered code:
 
 ```bash
-mutation-core-rsmutate -f src/wallet/wallet.cpp -c total_coverage.info
+bcore-mutationmutate -f src/wallet/wallet.cpp -c total_coverage.info
 ```
 
 Specify line range:
 
 ```bash
-mutation-core-rsmutate -f src/wallet/wallet.cpp --range 10 50
+bcore-mutationmutate -f src/wallet/wallet.cpp --range 10 50
 ```
 
 Security-only mutations (for fuzzing):
 
 ```bash
-mutation-core-rsmutate -f src/wallet/wallet.cpp --only-security-mutations
+bcore-mutationmutate -f src/wallet/wallet.cpp --only-security-mutations
 ```
 
 ### Analysis
@@ -111,19 +111,19 @@ mutation-core-rsmutate -f src/wallet/wallet.cpp --only-security-mutations
 Analyze all mutation folders:
 
 ```bash
-mutation-core-rsanalyze
+bcore-mutationanalyze
 ```
 
 Analyze specific folder with custom command:
 
 ```bash
-mutation-core-rsanalyze -f muts-wallet-cpp -c "cmake --build build && ./build/test/functional/wallet_test.py"
+bcore-mutationanalyze -f muts-wallet-cpp -c "cmake --build build && ./build/test/functional/wallet_test.py"
 ```
 
 Set timeout and parallel jobs:
 
 ```bash
-mutation-core-rsanalyze -j 8 -t 300 --survival-threshold 0.3
+bcore-mutationanalyze -j 8 -t 300 --survival-threshold 0.3
 ```
 
 ## Performance Improvements
@@ -141,7 +141,7 @@ The Rust version offers several performance improvements over the Python version
 ### Mutate Command
 
 ```
-mutation-core-rsmutate [OPTIONS]
+bcore-mutationmutate [OPTIONS]
 
 Options:
   -p, --pr <PR>                           Bitcoin Core's PR number (0 = current branch) [default: 0]
@@ -157,7 +157,7 @@ Options:
 ### Analyze Command
 
 ```
-mutation-core-rsanalyze [OPTIONS]
+bcore-mutationanalyze [OPTIONS]
 
 Options:
   -f, --folder <FOLDER>                  Folder with the mutants

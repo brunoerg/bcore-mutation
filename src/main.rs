@@ -14,7 +14,7 @@ mod report;
 use error::{MutationError, Result};
 
 #[derive(Parser)]
-#[command(name = "mutation-core-rs")]
+#[command(name = "bcore-mutation")]
 #[command(about = "Mutation testing tool designed for Bitcoin Core")]
 struct Cli {
     #[command(subcommand)]
