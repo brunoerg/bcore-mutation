@@ -41,8 +41,8 @@ cargo install --path .
 ```bash
 cd bitcoin
 git checkout branch # if needed
-bcore-mutationmutate
-bcore-mutationanalyze # use -j=N to set number of compilation jobs
+bcore-mutation mutate
+bcore-mutation analyze # use -j=N to set number of compilation jobs
 ```
 
 ### Generate Mutants for Specific File
@@ -111,19 +111,19 @@ bcore-mutationmutate -f src/wallet/wallet.cpp --only-security-mutations
 Analyze all mutation folders:
 
 ```bash
-bcore-mutationanalyze
+bcore-mutation analyze
 ```
 
 Analyze specific folder with custom command:
 
 ```bash
-bcore-mutationanalyze -f muts-wallet-cpp -c "cmake --build build && ./build/test/functional/wallet_test.py"
+bcore-mutation analyze -f muts-wallet-cpp -c "cmake --build build && ./build/test/functional/wallet_test.py"
 ```
 
 Set timeout and parallel jobs:
 
 ```bash
-bcore-mutationanalyze -j 8 -t 300 --survival-threshold 0.3
+bcore-mutation analyze -j 8 -t 300 --survival-threshold 0.3
 ```
 
 ## Performance Improvements
@@ -157,7 +157,7 @@ Options:
 ### Analyze Command
 
 ```
-bcore-mutationanalyze [OPTIONS]
+bcore-mutation analyze [OPTIONS]
 
 Options:
   -f, --folder <FOLDER>                  Folder with the mutants
