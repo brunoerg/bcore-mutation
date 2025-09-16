@@ -11,7 +11,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use mutation_core_rs::mutation;
+//! use bcore_mutation::mutation;
 //! use std::collections::HashMap;
 //!
 //! #[tokio::main]

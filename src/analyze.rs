@@ -266,13 +266,13 @@ mod tests {
         let cmd = get_command_to_kill("src/test/test_example.cpp", 0).unwrap();
         assert_eq!(
             cmd,
-            "cmake --build build && ./build/src/test/test_bitcoin --run_test=test_example"
+            "cmake --build build && ./build/bin/test_bitcoin --run_test=test_example"
         );
 
         // Test general case
         let cmd = get_command_to_kill("src/wallet/wallet.cpp", 2).unwrap();
         assert!(cmd.contains("cmake --build build -j2"));
-        assert!(cmd.contains("test_bitcoin"));
+        assert!(cmd.contains("ctest"));
         assert!(cmd.contains("test_runner.py"));
     }
 
