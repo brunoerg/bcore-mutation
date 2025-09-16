@@ -126,7 +126,7 @@ pub fn get_test_operators() -> Result<Vec<MutationOperator>, regex::Error> {
     // Instead of using negative lookahead, we'll use a simpler approach
     // This will match function calls but we'll filter out assert functions in the application logic
     let operators = vec![
-        (r"^\s*(\w+)\s*\([^)]*\)\s*;?\s*$", ""), // Function calls (will be filtered by skip logic)
+        (r"^\s*(?:\w+(?:\.|->|::))*(\w+)\s*\([^)]*\)\s*;?\s*$", ""), // Function calls (will be filtered by skip logic)
     ];
 
     operators
@@ -238,6 +238,7 @@ pub fn should_mutate_test_line(line: &str) -> bool {
     }
 
     // Only mutate if it looks like a function call
-    let function_call_pattern = Regex::new(r"^\s*(\w+)\s*\([^)]*\)\s*;?\s*$").unwrap();
+    let function_call_pattern =
+        Regex::new(r"^\s*(?:\w+(?:\.|->|::))*(\w+)\s*\([^)]*\)\s*;?\s*$").unwrap();
     function_call_pattern.is_match(line)
 }
