@@ -1,4 +1,4 @@
-# Mutation Core (Rust Version)
+# bcore-mutation
 
 **A mutation testing tool for Bitcoin Core, rewritten in Rust**.
 
