@@ -2,17 +2,10 @@
 
 **A mutation testing tool for Bitcoin Core, rewritten in Rust**.
 
-This is a complete rewrite of the original Python bcore-mutationtool, offering improved performance, better error handling, and enhanced concurrency.
+This is a complete rewrite of the original Python mutation-core tool, offering improved performance, better error handling, and enhanced concurrency.
 
 "Mutation testing (or mutation analysis or program mutation) is used to design new software tests and evaluate the quality of existing software tests. Mutation testing involves modifying a program in small ways. Each mutated version is called a mutant and tests detect and reject mutants by causing the behaviour of the original version to differ from the mutant. This is called killing the mutant. Test suites are measured by the percentage of mutants that they kill." (Wikipedia)
 
-## Features
-
-- **High Performance**: Leverages Rust's performance and memory safety
-- **Async/Await**: Non-blocking I/O for improved concurrency
-- **Better Error Handling**: Comprehensive error types with detailed messages
-- **Memory Safe**: No risk of buffer overflows or memory leaks
-- **Cross-Platform**: Works on Linux, macOS, and Windows
 
 All original features from the Python version:
 - Generate mutants only for code touched in specific branches (useful for testing PRs)
@@ -42,19 +35,19 @@ cargo install --path .
 cd bitcoin
 git checkout branch # if needed
 bcore-mutation mutate
-bcore-mutation analyze # use -j=N to set number of compilation jobs
+bcore-mutation analyze # use -j=N to set number of jobs
 ```
 
 ### Generate Mutants for Specific File
 
 ```bash
-bcore-mutationmutate -f src/wallet/wallet.cpp
+bcore-mutation mutate -f src/wallet/wallet.cpp
 ```
 
 ### Generate Mutants for Specific PR
 
 ```bash
-bcore-mutationmutate -p 12345
+bcore-mutatio nmutate -p 12345
 ```
 
 ### Create Skip Lines Configuration
@@ -71,7 +64,7 @@ Create a JSON file specifying lines to skip:
 Use with:
 
 ```bash
-bcore-mutationmutate -p 12345 --skip-lines skip.json
+bcore-mutation mutate -p 12345 --skip-lines skip.json
 ```
 
 ### Advanced Options
@@ -79,31 +72,31 @@ bcore-mutationmutate -p 12345 --skip-lines skip.json
 Create only one mutant per line (faster analysis):
 
 ```bash
-bcore-mutationmutate -p 12345 --one-mutant
+bcore-mutation mutate -p 12345 --one-mutant
 ```
 
 Create mutants only for tests:
 
 ```bash
-bcore-mutationmutate -p 12345 --test-only
+bcore-mutation mutate -p 12345 --test-only
 ```
 
 Use coverage file to create mutants only for covered code:
 
 ```bash
-bcore-mutationmutate -f src/wallet/wallet.cpp -c total_coverage.info
+bcore-mutation mutate -f src/wallet/wallet.cpp -c total_coverage.info
 ```
 
 Specify line range:
 
 ```bash
-bcore-mutationmutate -f src/wallet/wallet.cpp --range 10 50
+bcore-mutation mutate -f src/wallet/wallet.cpp --range 10 50
 ```
 
 Security-only mutations (for fuzzing):
 
 ```bash
-bcore-mutationmutate -f src/wallet/wallet.cpp --only-security-mutations
+bcore-mutation mutate -f src/wallet/wallet.cpp --only-security-mutations
 ```
 
 ### Analysis
@@ -124,47 +117,6 @@ Set timeout and parallel jobs:
 
 ```bash
 bcore-mutation analyze -j 8 -t 300 --survival-threshold 0.3
-```
-
-## Performance Improvements
-
-The Rust version offers several performance improvements over the Python version:
-
-- **Parallel Processing**: Uses Rayon for CPU-intensive operations
-- **Async I/O**: Non-blocking file operations and command execution
-- **Memory Efficiency**: Lower memory usage and no GIL limitations
-- **Faster Regex**: Compiled regex patterns with better performance
-- **Zero-Copy Operations**: Efficient string handling where possible
-
-## Command Line Interface
-
-### Mutate Command
-
-```
-bcore-mutationmutate [OPTIONS]
-
-Options:
-  -p, --pr <PR>                           Bitcoin Core's PR number (0 = current branch) [default: 0]
-  -t, --test-only                         Only create mutants for unit and functional tests
-  -c, --cov <COV>                        Path for the coverage file (*.info)
-      --skip-lines <SKIP_LINES>          Path for the file with lines to skip
-  -f, --file <FILE>                      File path to mutate
-  -r, --range <RANGE> <RANGE>            Specify a range of lines to be mutated
-      --one-mutant                       Create only one mutant per line
-  -s, --only-security-mutations          Apply only security-based mutations
-```
-
-### Analyze Command
-
-```
-bcore-mutation analyze [OPTIONS]
-
-Options:
-  -f, --folder <FOLDER>                  Folder with the mutants
-  -t, --timeout <TIMEOUT>                Timeout value per mutant in seconds [default: 1000]
-  -j, --jobs <JOBS>                      Number of jobs for Bitcoin Core compilation [default: 0]
-  -c, --command <COMMAND>                Command to test the mutants
-      --survival-threshold <THRESHOLD>    Maximum acceptable survival rate [default: 0.75]
 ```
 
 ## Library Usage
@@ -226,13 +178,6 @@ Run the test suite:
 cargo test
 ```
 
-Run tests with coverage:
-
-```bash
-cargo install cargo-tarpaulin
-cargo tarpaulin --out html
-```
-
 ## Contributing
 
 1. Fork the repository
@@ -246,9 +191,3 @@ cargo tarpaulin --out html
 ## License
 
 MIT License
-
-### Migration Checklist
-
-- [ ] Replace `pip install mutation-core` with `cargo install mutation-core`
-- [ ] Update CI/CD scripts to use the new binary
-- [ ] Review any custom scripts that parse output (format is mostly the same)
