@@ -6,7 +6,6 @@ use crate::operators::{
     get_regex_operators, get_security_operators, get_skip_if_contain_patterns, get_test_operators,
     should_mutate_test_line,
 };
-use rand::seq::SliceRandom;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
@@ -209,17 +208,12 @@ pub async fn mutate_file(
     }
 
     let mut mutant_count = 0;
-    let mut touched_lines_shuffled = touched_lines.clone();
-    let mut operators_shuffled = operators.clone();
 
     if one_mutant {
-        let mut rng = rand::thread_rng();
-        touched_lines_shuffled.shuffle(&mut rng);
-        operators_shuffled.shuffle(&mut rng);
         println!("One mutant mode enabled");
     }
 
-    for line_num in touched_lines_shuffled {
+    for line_num in touched_lines {
         let line_idx = line_num.saturating_sub(1);
 
         // Check coverage if provided
@@ -254,7 +248,7 @@ pub async fn mutate_file(
 
         let mut line_had_match = false;
 
-        for operator in &operators_shuffled {
+        for operator in &operators {
             // Special handling for test operators
             if file_to_mutate.contains(".py") || is_unit_test {
                 if !should_mutate_test_line(line_before_mutation) {
