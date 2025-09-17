@@ -187,7 +187,6 @@ async fn save_report(report_data: ReportData, _original_file_path: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_parse_diffs_to_json() {
