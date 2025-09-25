@@ -267,8 +267,13 @@ pub async fn mutate_file(
                 mutated_lines[line_idx] = &line_mutated;
                 let mutated_content = mutated_lines.join("\n");
 
-                mutant_count =
-                    write_mutation(file_to_mutate, &mutated_content, mutant_count, pr_number)?;
+                mutant_count = write_mutation(
+                    file_to_mutate,
+                    &mutated_content,
+                    mutant_count,
+                    pr_number,
+                    range_lines,
+                )?;
 
                 if one_mutant {
                     break; // Break only from operator loop, continue to next line
@@ -352,6 +357,7 @@ fn write_mutation(
     mutated_content: &str,
     mutant_index: usize,
     pr_number: Option<u32>,
+    range_lines: Option<(usize, usize)>,
 ) -> Result<usize> {
     let file_extension = if file_to_mutate.ends_with(".h") {
         ".h"
@@ -369,6 +375,8 @@ fn write_mutation(
     let ext = file_extension.trim_start_matches('.');
     let folder = if let Some(pr) = pr_number {
         format!("muts-pr-{}-{}-{}", pr, file_name, ext)
+    } else if let Some(range) = range_lines {
+        format!("muts-pr-{}-{}-{}", file_name, range.0, range.1)
     } else {
         format!("muts-{}-{}", file_name, ext)
     };
@@ -434,7 +442,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         std::env::set_current_dir(&temp_dir).unwrap();
 
-        let result = write_mutation("test.cpp", "mutated content", 0, None).unwrap();
+        let result = write_mutation("test.cpp", "mutated content", 0, None, None).unwrap();
         assert_eq!(result, 1);
 
         let folder_path = Path::new("muts-test-cpp");
