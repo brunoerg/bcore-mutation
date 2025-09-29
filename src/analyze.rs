@@ -59,7 +59,7 @@ pub async fn analyze_folder(
     timeout_secs: u64,
     survival_threshold: f64,
 ) -> Result<()> {
-    let mut killed = Vec::new();
+    let mut num_killed: u64 = 0;
     let mut not_killed = Vec::new();
 
     // Read target file path
@@ -128,12 +128,12 @@ pub async fn analyze_folder(
             not_killed.push(file_name.clone());
         } else {
             println!("KILLED ✅");
-            killed.push(file_name.clone());
+            num_killed += 1
         }
     }
 
     // Generate report
-    let score = killed.len() as f64 / total_mutants as f64;
+    let score = num_killed as f64 / total_mutants as f64;
     println!("\nMUTATION SCORE: {:.2}%", score * 100.0);
 
     generate_report(
