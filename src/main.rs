@@ -23,7 +23,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create mutants for a specific PR or file
+    /// Create mutants for a specific Bitcoin Core PR or file
     Mutate {
         /// Bitcoin Core's PR number (0 = current branch)
         #[arg(short, long, default_value = "0")]
