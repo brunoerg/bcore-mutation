@@ -47,7 +47,7 @@ bcore-mutation mutate -f src/wallet/wallet.cpp
 ### Generate Mutants for Specific PR
 
 ```bash
-bcore-mutatio nmutate -p 12345
+bcore-mutation mutate -p 12345
 ```
 
 ### Create Skip Lines Configuration
