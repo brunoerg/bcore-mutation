@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Bruno Garcia <brunoely.gc@gmail.com>"]
 description = "Mutation testing tool for Bitcoin Core"
 license = "MIT"
-repository = "https://github.com/brunoerg/mutation-core"
+repository = "https://github.com/brunoerg/bcore-mutation"
 readme = "README.md"
 
 [[bin]]
