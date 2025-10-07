@@ -10,6 +10,7 @@ mod git_changes;
 mod mutation;
 mod operators;
 mod report;
+mod sqlite;
 
 use error::{MutationError, Result};
 
@@ -64,6 +65,10 @@ enum Commands {
         /// Add custom expert rule for arid node detection
         #[arg(long, value_name = "PATTERN")]
         add_expert_rule: Option<String>,
+
+        /// Add persistant data storage
+        #[arg(long)]
+        sqlite: bool,
     },
     /// Analyze mutants
     Analyze {
@@ -105,6 +110,7 @@ async fn main() -> Result<()> {
             only_security_mutations,
             disable_ast_filtering,
             add_expert_rule,
+            sqlite,//new command line
         } => {
             let skip_lines_map = if let Some(path) = skip_lines {
                 read_skip_lines(&path)?
@@ -142,6 +148,11 @@ async fn main() -> Result<()> {
 
             if let Some(ref expert_rule) = add_expert_rule {
                 println!("Custom expert rule will be applied: {}", expert_rule);
+            }
+
+            if sqlite {
+                sqlite::store_mutants();
+                //                println!("sql test CLI");
             }
 
             mutation::run_mutation(
