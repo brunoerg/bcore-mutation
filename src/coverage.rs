@@ -18,8 +18,17 @@ pub fn parse_coverage_file(coverage_file_path: &Path) -> Result<HashMap<String, 
 
         // Check for source file
         if let Some(captures) = file_pattern.captures(line) {
-            current_file = Some(captures[1].to_string());
-            coverage_data.insert(captures[1].to_string(), Vec::new());
+            let full_path = &captures[1];
+
+            // Extract from "src/" onwards
+            let relative_path = if let Some(pos) = full_path.find("src/") {
+                &full_path[pos..]
+            } else {
+                full_path // fallback to full path if "src/" not found
+            };
+
+            current_file = Some(relative_path.to_string());
+            coverage_data.insert(relative_path.to_string(), Vec::new());
             continue;
         }
 
