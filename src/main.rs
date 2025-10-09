@@ -1,3 +1,4 @@
+use anyhow::Error;
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -66,9 +67,9 @@ enum Commands {
         #[arg(long, value_name = "PATTERN")]
         add_expert_rule: Option<String>,
 
-        /// Add persistant data storage
-        #[arg(long)]
-        sqlite: bool,
+        /// Optional path to SQLite database file (default: mutation.db)
+        #[arg(long, value_name = "PATH")]
+        sqlite: Option<Option<PathBuf>>,
     },
     /// Analyze mutants
     Analyze {
@@ -110,7 +111,7 @@ async fn main() -> Result<()> {
             only_security_mutations,
             disable_ast_filtering,
             add_expert_rule,
-            sqlite,//new command line
+            sqlite,
         } => {
             let skip_lines_map = if let Some(path) = skip_lines {
                 read_skip_lines(&path)?
@@ -133,6 +134,16 @@ async fn main() -> Result<()> {
                 None
             };
 
+            let db_path = match sqlite {
+                Some(Some(path)) => {
+                    let mut full_path = PathBuf::from("db");
+                    full_path.push(path);
+                    Some(full_path)
+                }
+                Some(None) => Some(PathBuf::from("db/mutation.db")),
+                None => None,
+            };
+
             if pr != 0 && file.is_some() {
                 return Err(MutationError::InvalidInput(
                     "You should only provide PR number or file".to_string(),
@@ -150,9 +161,9 @@ async fn main() -> Result<()> {
                 println!("Custom expert rule will be applied: {}", expert_rule);
             }
 
-            if sqlite {
-                sqlite::store_mutants();
-                //                println!("sql test CLI");
+            if let Some(ref path) = db_path {
+                sqlite::store_mutants(path).map_err(Error::from)?;
+
             }
 
             mutation::run_mutation(
