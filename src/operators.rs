@@ -137,6 +137,7 @@ pub fn get_test_operators() -> Result<Vec<MutationOperator>, regex::Error> {
 
 pub fn get_do_not_mutate_patterns() -> Vec<&'static str> {
     vec![
+        "/",
         "//",
         "#",
         "*",
