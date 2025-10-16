@@ -200,8 +200,8 @@ async fn run_command(command: &str, timeout_secs: u64) -> Result<bool> {
 }
 
 async fn run_build_command() -> Result<()> {
-    let build_command = "rm -rf build && cmake -B build && cmake --build build";
-    //println!("\n\nRunning {}", build_command);
+    let build_command =
+        "rm -rf build && cmake -B build -DENABLE_IPC=OFF && cmake --build build -j $(nproc)";
 
     let success = run_command(build_command, 3600).await?; // 1 hour timeout for build
     if !success {
