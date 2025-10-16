@@ -24,47 +24,98 @@ pub async fn run_git_command(args: &[&str]) -> Result<Vec<String>> {
 }
 
 pub async fn get_changed_files(pr_number: Option<u32>) -> Result<Vec<String>> {
+    let mut used_remote = "upstream"; // Track which remote we successfully used
+
     if let Some(pr) = pr_number {
-        // Fetch the PR
-        let fetch_args = &["fetch", "upstream", &format!("pull/{}/head:pr/{}", pr, pr)];
-        match run_git_command(fetch_args).await {
+        // Try to fetch the PR from upstream first
+        let fetch_upstream_args = &["fetch", "upstream", &format!("pull/{}/head:pr/{}", pr, pr)];
+        match run_git_command(fetch_upstream_args).await {
             Ok(_) => {
+                println!("Successfully fetched from upstream");
                 println!("Checking out...");
                 let checkout_args = &["checkout", &format!("pr/{}", pr)];
                 run_git_command(checkout_args).await?;
             }
-            Err(_) => {
-                println!("Fetching and updating branch...");
-                let rebase_args = &["rebase", &format!("pr/{}", pr)];
-                run_git_command(rebase_args).await?;
+            Err(upstream_err) => {
+                println!("Failed to fetch from upstream: {:?}", upstream_err);
+                println!("Trying to fetch from origin...");
+
+                // Try to fetch from origin as fallback
+                let fetch_origin_args =
+                    &["fetch", "origin", &format!("pull/{}/head:pr/{}", pr, pr)];
+                match run_git_command(fetch_origin_args).await {
+                    Ok(_) => {
+                        println!("Successfully fetched from origin");
+                        used_remote = "origin";
+                        println!("Checking out...");
+                        let checkout_args = &["checkout", &format!("pr/{}", pr)];
+                        run_git_command(checkout_args).await?;
+                    }
+                    Err(origin_err) => {
+                        println!("Failed to fetch from origin: {:?}", origin_err);
+                        println!("Attempting to rebase existing pr/{} branch...", pr);
+                        let rebase_args = &["rebase", &format!("pr/{}", pr)];
+                        run_git_command(rebase_args).await?;
+                        // In rebase case, we don't know which remote was used originally
+                        // Try upstream first, fall back to origin if it fails
+                    }
+                }
             }
         }
     }
 
-    let diff_args = &["diff", "--name-only", "upstream/master...HEAD"];
-    run_git_command(diff_args).await
+    // Try diff with the appropriate remote
+    let diff_args = &[
+        "diff",
+        "--name-only",
+        &format!("{}/master...HEAD", used_remote),
+    ];
+    match run_git_command(diff_args).await {
+        Ok(result) => Ok(result),
+        Err(_) if used_remote == "upstream" => {
+            // If upstream diff failed, try origin
+            println!("Diff with upstream/master failed, trying origin/master...");
+            let diff_args_origin = &["diff", "--name-only", "origin/master...HEAD"];
+            run_git_command(diff_args_origin).await
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn get_lines_touched(file_path: &str) -> Result<Vec<usize>> {
-    let diff_args = &[
+    // Try upstream first
+    let diff_args_upstream = &[
         "diff",
         "--unified=0",
         "upstream/master...HEAD",
         "--",
         file_path,
     ];
-    let diff_output = run_git_command(diff_args).await?;
+
+    let diff_output = match run_git_command(diff_args_upstream).await {
+        Ok(output) => output,
+        Err(_) => {
+            // Fall back to origin if upstream fails
+            println!("Diff with upstream/master failed, trying origin/master...");
+            let diff_args_origin = &[
+                "diff",
+                "--unified=0",
+                "origin/master...HEAD",
+                "--",
+                file_path,
+            ];
+            run_git_command(diff_args_origin).await?
+        }
+    };
 
     let mut lines = Vec::new();
     let line_range_regex = Regex::new(r"@@.*\+(\d+)(?:,(\d+))?.*@@")?;
-
     for line in diff_output {
         if line.starts_with("@@") {
             if let Some(captures) = line_range_regex.captures(&line) {
                 let start_line: usize = captures[1]
                     .parse()
                     .map_err(|_| MutationError::Git("Invalid line number in diff".to_string()))?;
-
                 let num_lines = if let Some(count_match) = captures.get(2) {
                     count_match
                         .as_str()
@@ -73,12 +124,10 @@ pub async fn get_lines_touched(file_path: &str) -> Result<Vec<usize>> {
                 } else {
                     1
                 };
-
                 lines.extend(start_line..start_line + num_lines);
             }
         }
     }
-
     Ok(lines)
 }
 
