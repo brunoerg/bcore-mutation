@@ -113,6 +113,8 @@ async fn main() -> Result<()> {
             add_expert_rule,
             sqlite,
         } => {
+            let mut run_id: i64 = 0;
+
             let skip_lines_map = if let Some(path) = skip_lines {
                 read_skip_lines(&path)?
             } else {
@@ -133,7 +135,7 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
-
+    
             let db_path = match sqlite {
                 Some(Some(path)) => {
                     let mut full_path = PathBuf::from("db");
@@ -162,8 +164,8 @@ async fn main() -> Result<()> {
             }
 
             if let Some(ref path) = db_path {
-                sqlite::store_mutants(path).map_err(Error::from)?;
-
+                sqlite::check_db(path).map_err(Error::from)?;
+                run_id = sqlite::store_run(path, if pr == 0 { None } else { Some(pr) }).map_err(Error::from)?;
             }
 
             mutation::run_mutation(
@@ -179,6 +181,12 @@ async fn main() -> Result<()> {
                 add_expert_rule,
             )
             .await?;
+
+            if let Some(ref path) = db_path {
+                sqlite::store_mutants(path, run_id).map_err(Error::from)?;
+
+            }
+
         }
         Commands::Analyze {
             folder,
