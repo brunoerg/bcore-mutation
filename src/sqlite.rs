@@ -1,3 +1,5 @@
+use std::error::Error;
+use std::process::Command;
 use rusqlite::params;
 use std::fs;
 use std::path::Path;
@@ -5,23 +7,96 @@ use std::path::PathBuf;
 use rusqlite::{Connection, Result};
 
 use crate::git_changes::{get_commit_hash};
+use crate::error::{MutationError};
+use crate::analyze::{find_mutation_folders};
+
+fn get_file_diff(mainfile: Option<PathBuf>, comparefile: PathBuf) -> Result<String, Box<dyn Error>> {
+
+    
+    let mainfile = mainfile.ok_or("Missing source file to compare with mutant in get_file_diff proccess")?;
+
+    let output = Command::new("diff")
+        .arg(&mainfile)
+        .arg(&comparefile)
+        .output()?;
+
+    println!("Executing diff from files {:?} and  {:?}", mainfile, comparefile);
+
+    if output.status.success() {
+        Ok(String::from("Compare files are equal!"))
+    } else {
+        let diff_result = str::from_utf8(&output.stdout)?;
+        Ok(diff_result.to_string())
+    }
+
+    
+}
+
+fn get_files_from_folder(filepath: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    println!("filepath get_files_from_folder: {:?}", filepath);
+
+    if !filepath.is_dir() {
+        return Err(format!("Current path is not a folder: {:?}", filepath).into());
+    }
+
+    let entries = fs::read_dir(filepath)?
+        .filter_map(|entry| {
+            match entry {
+                Ok(e) => {
+                    let path = e.path();
+                    if path.is_file() {
+                        // Remove "original_file.txt" from vec
+                        if let Some(name) = path.file_name() {
+                            if name != "original_file.txt" {
+                                return Some(path);
+                            }
+                        }
+                    }
+                    None
+                }
+                Err(_) => None,
+            }
+        })
+        .collect();
+
+    Ok(entries)
+}
 
 
-pub fn store_mutants(db_path: &PathBuf, run_id: i64) -> Result<()> {
+pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, originFile: Option<PathBuf>) -> Result<()> {
     
     println!("SQLite option: Storing mutants on {}", db_path.display());
     let connection = Connection::open(db_path)?;
+    //get mutants folder
+    let folders = find_mutation_folders().map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+        })?;
 
+    let mut diffs = Vec::new();
 
-
+    for folder_path in folders {
+        let files = get_files_from_folder(&folder_path).unwrap_or_default();
+        
+        for file in &files{
+            let diff = get_file_diff(originFile.clone(), file.into());
+            diffs.push(diff);
+        }
+    }
 
     //run_id
     println!("run_id: {}", run_id.to_string());
     //diff
+    if let Some(Ok(diff_text)) = diffs.get(0) {
+        println!("diff: {}", diff_text);
+    }
     //patch_hash
+    println!("patch_hash: ");
     //command_to_test
+    println!("command to test: ");
     //file_path
+    println!("file path: ");
     //operator
+    println!("operator: ");
 
     /*
     connection.execute("
@@ -32,13 +107,10 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64) -> Result<()> {
     */
     //Filling mutants table
 
-
-
     // Fazer preenchimento da ultima tabela (mutants)
     // TODO fill tables with run
     // TODO test functionality
     // TODO script test
-
     Ok(())
 }
 

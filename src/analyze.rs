@@ -35,7 +35,7 @@ pub async fn run_analysis(
     Ok(())
 }
 
-fn find_mutation_folders() -> Result<Vec<PathBuf>> {
+pub fn find_mutation_folders() -> Result<Vec<PathBuf>> {
     let mut folders = Vec::new();
 
     for entry in WalkDir::new(".").max_depth(1) {

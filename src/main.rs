@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
 
             mutation::run_mutation(
                 if pr == 0 { None } else { Some(pr) },
-                file,
+                file.clone(),
                 one_mutant,
                 only_security_mutations,
                 range_lines,
@@ -183,8 +183,11 @@ async fn main() -> Result<()> {
             .await?;
 
             if let Some(ref path) = db_path {
-                sqlite::store_mutants(path, run_id).map_err(Error::from)?;
-
+                sqlite::store_mutants(
+                    path,
+                    run_id,
+                    if pr == 0 { None } else { Some(pr) },
+                    file).map_err(Error::from)?;
             }
 
         }
