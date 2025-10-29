@@ -11,6 +11,10 @@ use crate::git_changes::{get_commit_hash};
 use crate::error::{MutationError};
 use crate::analyze::{find_mutation_folders};
 
+pub fn update_status_mutant() {
+//TODO after running analyze change status to killed or survived
+}
+
 fn get_hash_from_diff(diff: &str) -> Result<String, Box<dyn Error>> {
     let mut hasher = Sha256::new();
     hasher.update(diff.as_bytes());
@@ -72,6 +76,7 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
     let connection = Connection::open(db_path)?;
     let mut vec_diffs = Vec::new();
     let mut vec_hash = Vec::new();
+    let mut vec_file = Vec::new();
     //get mutants folder
     let folders = find_mutation_folders().map_err(|e| {
             rusqlite::Error::ToSqlConversionFailure(Box::new(e))
@@ -81,17 +86,14 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
         let files = get_files_from_folder(&folder_path).unwrap_or_default();
         
         for file in &files{
-
             let diff = get_file_diff(originFile.clone(), file.into()).unwrap_or_default();
             let patch_hash = get_hash_from_diff(&diff).unwrap_or_default();
 
             vec_diffs.push(diff);
             vec_hash.push(patch_hash);
-
+            vec_file.push(file.clone());
         }
     }
-
-
 
     //run_id
     println!("run_id: {}", run_id.to_string());
@@ -106,7 +108,9 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
     //command_to_test
     println!("command to test: ");
     //file_path
-    println!("file path: ");
+    if let Some(filepath) = vec_file.get(0) {
+        println!("file path: {:?}", filepath);
+    };
     //operator
     println!("operator: ");
 
