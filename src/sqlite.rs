@@ -1,3 +1,4 @@
+use sha2::{Sha256, Digest};
 use std::error::Error;
 use std::process::Command;
 use rusqlite::params;
@@ -10,9 +11,15 @@ use crate::git_changes::{get_commit_hash};
 use crate::error::{MutationError};
 use crate::analyze::{find_mutation_folders};
 
-fn get_file_diff(mainfile: Option<PathBuf>, comparefile: PathBuf) -> Result<String, Box<dyn Error>> {
+fn get_hash_from_diff(diff: &str) -> Result<String, Box<dyn Error>> {
+    let mut hasher = Sha256::new();
+    hasher.update(diff.as_bytes());
+    let result = hasher.finalize();
+    let hash_hex = format!("{:x}", result);
+    Ok(hash_hex)
+}
 
-    
+fn get_file_diff(mainfile: Option<PathBuf>, comparefile: PathBuf) -> Result<String, Box<dyn Error>> {
     let mainfile = mainfile.ok_or("Missing source file to compare with mutant in get_file_diff proccess")?;
 
     let output = Command::new("diff")
@@ -28,8 +35,6 @@ fn get_file_diff(mainfile: Option<PathBuf>, comparefile: PathBuf) -> Result<Stri
         let diff_result = str::from_utf8(&output.stdout)?;
         Ok(diff_result.to_string())
     }
-
-    
 }
 
 fn get_files_from_folder(filepath: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
@@ -62,35 +67,42 @@ fn get_files_from_folder(filepath: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>
     Ok(entries)
 }
 
-
 pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, originFile: Option<PathBuf>) -> Result<()> {
-    
     println!("SQLite option: Storing mutants on {}", db_path.display());
     let connection = Connection::open(db_path)?;
+    let mut vec_diffs = Vec::new();
+    let mut vec_hash = Vec::new();
     //get mutants folder
     let folders = find_mutation_folders().map_err(|e| {
             rusqlite::Error::ToSqlConversionFailure(Box::new(e))
         })?;
 
-    let mut diffs = Vec::new();
-
     for folder_path in folders {
         let files = get_files_from_folder(&folder_path).unwrap_or_default();
         
         for file in &files{
-            let diff = get_file_diff(originFile.clone(), file.into());
-            diffs.push(diff);
+
+            let diff = get_file_diff(originFile.clone(), file.into()).unwrap_or_default();
+            let patch_hash = get_hash_from_diff(&diff).unwrap_or_default();
+
+            vec_diffs.push(diff);
+            vec_hash.push(patch_hash);
+
         }
     }
+
+
 
     //run_id
     println!("run_id: {}", run_id.to_string());
     //diff
-    if let Some(Ok(diff_text)) = diffs.get(0) {
+    if let Some(diff_text) = vec_diffs.get(0) {
         println!("diff: {}", diff_text);
-    }
+    };
     //patch_hash
-    println!("patch_hash: ");
+    if let Some(hash_text) = vec_hash.get(0) {
+        println!("patch_hash: {}", hash_text);
+    };
     //command_to_test
     println!("command to test: ");
     //file_path
