@@ -27,6 +27,7 @@ walkdir = "2.4"
 rayon = "1.8"
 tempfile = "3.8"
 rusqlite = "0.37.0"
+sha2 = "0.10.9"
 
 [dev-dependencies]
 tempfile = "3.8"

@@ -1,3 +1,6 @@
+use sha2::{Sha256, Digest};
+use std::error::Error;
+use std::process::Command;
 use rusqlite::params;
 use std::fs;
 use std::path::Path;
@@ -5,44 +8,148 @@ use std::path::PathBuf;
 use rusqlite::{Connection, Result};
 
 use crate::git_changes::{get_commit_hash};
+use crate::error::{MutationError};
+use crate::analyze::{find_mutation_folders};
 
+pub fn update_status_mutant() {
+//TODO after running analyze change status to killed or survived
+}
 
-pub fn store_mutants(db_path: &PathBuf, run_id: i64) -> Result<()> {
-    
-    println!("SQLite option: Storing mutants on {}", db_path.display());
-    let connection = Connection::open(db_path)?;
+fn get_hash_from_diff(diff: &str) -> Result<String, Box<dyn Error>> {
+    let mut hasher = Sha256::new();
+    hasher.update(diff.as_bytes());
+    let result = hasher.finalize();
+    let hash_hex = format!("{:x}", result);
+    Ok(hash_hex)
+}
 
+fn get_file_diff(mainfile: Option<PathBuf>, comparefile: PathBuf) -> Result<String, Box<dyn Error>> {
+    let mainfile = mainfile.ok_or("Missing source file to compare with mutant in get_file_diff proccess")?;
 
+    let output = Command::new("diff")
+        .arg(&mainfile)
+        .arg(&comparefile)
+        .output()?;
 
+    println!("Executing diff from files {:?} and  {:?}", mainfile, comparefile);
 
-    //run_id
-    println!("run_id: {}", run_id.to_string());
-    //diff
-    //patch_hash
-    //command_to_test
-    //file_path
-    //operator
+    if output.status.success() {
+        Ok(String::from("Compare files are equal!"))
+    } else {
+        let diff_result = str::from_utf8(&output.stdout)?;
+        Ok(diff_result.to_string())
+    }
+}
 
-    /*
-    connection.execute("
+fn get_files_from_folder(filepath: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    println!("filepath get_files_from_folder: {:?}", filepath);
 
-        INSERT INTO  mutants (run_id , diff, patch_hash, command_to_test, file_path, operator)
-        VALUES (?1, ?2, ?3, ?4);
-    ", params![run_id, commit_hash, pr_number, tool_version],)?;
-    */
-    //Filling mutants table
+    if !filepath.is_dir() {
+        return Err(format!("Current path is not a folder: {:?}", filepath).into());
+    }
 
+    let entries = fs::read_dir(filepath)?
+        .filter_map(|entry| {
+            match entry {
+                Ok(e) => {
+                    let path = e.path();
+                    if path.is_file() {
+                        // Remove "original_file.txt" from vec
+                        if let Some(name) = path.file_name() {
+                            if name != "original_file.txt" {
+                                return Some(path);
+                            }
+                        }
+                    }
+                    None
+                }
+                Err(_) => None,
+            }
+        })
+        .collect();
 
-
-    // Fazer preenchimento da ultima tabela (mutants)
-    // TODO fill tables with run
-    // TODO test functionality
-    // TODO script test
-
-    Ok(())
+    Ok(entries)
 }
 
 
+fn check_mutation_folder(
+    file_to_mutate: &str,
+    pr_number: Option<u32>,
+    range_lines: Option<(usize, usize)>,
+) -> Result<PathBuf> {
+    let file_extension = if file_to_mutate.ends_with(".h") {
+        ".h"
+    } else if file_to_mutate.ends_with(".py") {
+        ".py"
+    } else {
+        ".cpp"
+    };
+
+    let file_name = Path::new(file_to_mutate)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| MutationError::InvalidInput("Invalid file path".to_string()))
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+    let ext = file_extension.trim_start_matches('.');
+    let folder = if let Some(pr) = pr_number {
+        format!("muts-pr-{}-{}-{}", pr, file_name, ext)
+    } else if let Some(range) = range_lines {
+        format!("muts-pr-{}-{}-{}", file_name, range.0, range.1)
+    } else {
+        format!("muts-{}-{}", file_name, ext)
+    };
+
+    Ok(PathBuf::from(folder))
+}
+
+pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, originFile: Option<PathBuf>, range_lines: Option<(usize, usize)>) -> Result<()> {
+    println!("SQLite option: Storing mutants on {}", db_path.display());
+    let connection = Connection::open(db_path)?;
+    let operator: String = "None".to_string();
+
+    //get mutants folder
+
+    //TODO continuar aqui, verificando o check_mutation
+    if let Some(file_path) = originFile.clone() {
+        let file_str = file_path.to_string_lossy().to_string();
+        let mutation_folder = check_mutation_folder(&file_str, pr_number, range_lines);
+
+        let files = get_files_from_folder(&mutation_folder.unwrap()).unwrap_or_default();
+        
+        for file in &files{
+            let diff = get_file_diff(originFile.clone(), file.into()).unwrap_or_default();
+            let patch_hash = get_hash_from_diff(&diff).unwrap_or_default();
+            let mut file_path = String::new();
+
+            file_path = originFile.clone().unwrap_or_default().to_string_lossy().into_owned();
+
+            //run_id
+            println!("run_id: {}", run_id.to_string());
+
+            //diff
+            //println!("diff: {}", diff);
+
+            //patch_hash
+            println!("patch_hash: {}", patch_hash);
+
+            //file_path
+            println!("file path: {:?}", file_path);
+
+            //operator
+            println!("operator: {}", operator);
+            let dummydiff = "";
+            connection.execute("
+
+                INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator)
+                VALUES (?1, ?2, ?3, ?4, ?5);
+            ", params![run_id, dummydiff, patch_hash, file_path, operator],)?;
+
+        }
+        
+    };
+    Ok(())
+}
 
 pub fn store_run(db_path: &PathBuf, pr_number: Option<u32>) -> Result<i64> {
 
@@ -57,14 +164,6 @@ pub fn store_run(db_path: &PathBuf, pr_number: Option<u32>) -> Result<i64> {
 
     let project_id = proj_query_row.0;
     println!("id: {}", project_id);
-    
-    /*
-    let commit_hash = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-*/
   
     let commit_hash = match get_commit_hash() {
         Ok(hash) => hash,
@@ -143,7 +242,6 @@ fn _check_schema(connection: &Connection) -> Result<()> {
         }
     }
 
-    // Verificação de colunas essenciais por tabela (incluindo colunas virtuais)
     let table_columns: Vec<(&str, Vec<&str>)> = vec![
         ("projects", vec!["id", "name", "repository_url"]),
         ("runs", vec!["id", "project_id", "commit_hash", "pr_number", "created_at", "tool_version"]),
