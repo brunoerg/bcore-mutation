@@ -1,6 +1,6 @@
 [package]
 name = "bcore-mutation"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Bruno Garcia <brunoely.gc@gmail.com>"]
 description = "Mutation testing tool for Bitcoin Core"
