@@ -74,9 +74,8 @@ fn get_files_from_folder(filepath: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>
 pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, originFile: Option<PathBuf>) -> Result<()> {
     println!("SQLite option: Storing mutants on {}", db_path.display());
     let connection = Connection::open(db_path)?;
-    let mut vec_diffs = Vec::new();
-    let mut vec_hash = Vec::new();
-    let mut vec_file = Vec::new();
+    let operator: String = "None".to_string();
+
     //get mutants folder
     let folders = find_mutation_folders().map_err(|e| {
             rusqlite::Error::ToSqlConversionFailure(Box::new(e))
@@ -88,49 +87,36 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
         for file in &files{
             let diff = get_file_diff(originFile.clone(), file.into()).unwrap_or_default();
             let patch_hash = get_hash_from_diff(&diff).unwrap_or_default();
+            let mut file_path = String::new();
 
-            vec_diffs.push(diff);
-            vec_hash.push(patch_hash);
-            vec_file.push(file.clone());
+            file_path = file.to_string_lossy().into_owned();;
+
+            //run_id
+            println!("run_id: {}", run_id.to_string());
+
+            //diff
+            println!("diff: {}", diff);
+
+            //patch_hash
+            println!("patch_hash: {}", patch_hash);
+
+            //file_path
+            println!("file path: {:?}", file_path);
+
+            //operator
+            println!("operator: {}", operator);
+
+            connection.execute("
+
+                INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator)
+                VALUES (?1, ?2, ?3, ?4, ?5);
+            ", params![run_id, diff, patch_hash, file_path, operator],)?;
+
         }
     }
 
-    //run_id
-    println!("run_id: {}", run_id.to_string());
-    //diff
-    if let Some(diff_text) = vec_diffs.get(0) {
-        println!("diff: {}", diff_text);
-    };
-    //patch_hash
-    if let Some(hash_text) = vec_hash.get(0) {
-        println!("patch_hash: {}", hash_text);
-    };
-    //command_to_test
-    println!("command to test: ");
-    //file_path
-    if let Some(filepath) = vec_file.get(0) {
-        println!("file path: {:?}", filepath);
-    };
-    //operator
-    println!("operator: ");
-
-    /*
-    connection.execute("
-
-        INSERT INTO  mutants (run_id , diff, patch_hash, command_to_test, file_path, operator)
-        VALUES (?1, ?2, ?3, ?4);
-    ", params![run_id, commit_hash, pr_number, tool_version],)?;
-    */
-    //Filling mutants table
-
-    // Fazer preenchimento da ultima tabela (mutants)
-    // TODO fill tables with run
-    // TODO test functionality
-    // TODO script test
     Ok(())
 }
-
-
 
 pub fn store_run(db_path: &PathBuf, pr_number: Option<u32>) -> Result<i64> {
 
@@ -145,14 +131,6 @@ pub fn store_run(db_path: &PathBuf, pr_number: Option<u32>) -> Result<i64> {
 
     let project_id = proj_query_row.0;
     println!("id: {}", project_id);
-    
-    /*
-    let commit_hash = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-*/
   
     let commit_hash = match get_commit_hash() {
         Ok(hash) => hash,
@@ -231,7 +209,6 @@ fn _check_schema(connection: &Connection) -> Result<()> {
         }
     }
 
-    // Verificação de colunas essenciais por tabela (incluindo colunas virtuais)
     let table_columns: Vec<(&str, Vec<&str>)> = vec![
         ("projects", vec!["id", "name", "repository_url"]),
         ("runs", vec!["id", "project_id", "commit_hash", "pr_number", "created_at", "tool_version"]),
