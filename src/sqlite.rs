@@ -71,31 +71,64 @@ fn get_files_from_folder(filepath: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>
     Ok(entries)
 }
 
-pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, originFile: Option<PathBuf>) -> Result<()> {
+
+fn check_mutation_folder(
+    file_to_mutate: &str,
+    pr_number: Option<u32>,
+    range_lines: Option<(usize, usize)>,
+) -> Result<PathBuf> {
+    let file_extension = if file_to_mutate.ends_with(".h") {
+        ".h"
+    } else if file_to_mutate.ends_with(".py") {
+        ".py"
+    } else {
+        ".cpp"
+    };
+
+    let file_name = Path::new(file_to_mutate)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| MutationError::InvalidInput("Invalid file path".to_string()))
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+
+    let ext = file_extension.trim_start_matches('.');
+    let folder = if let Some(pr) = pr_number {
+        format!("muts-pr-{}-{}-{}", pr, file_name, ext)
+    } else if let Some(range) = range_lines {
+        format!("muts-pr-{}-{}-{}", file_name, range.0, range.1)
+    } else {
+        format!("muts-{}-{}", file_name, ext)
+    };
+
+    Ok(PathBuf::from(folder))
+}
+
+pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, originFile: Option<PathBuf>, range_lines: Option<(usize, usize)>) -> Result<()> {
     println!("SQLite option: Storing mutants on {}", db_path.display());
     let connection = Connection::open(db_path)?;
     let operator: String = "None".to_string();
 
     //get mutants folder
-    let folders = find_mutation_folders().map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(e))
-        })?;
 
-    for folder_path in folders {
-        let files = get_files_from_folder(&folder_path).unwrap_or_default();
+    //TODO continuar aqui, verificando o check_mutation
+    if let Some(file_path) = originFile.clone() {
+        let file_str = file_path.to_string_lossy().to_string();
+        let mutation_folder = check_mutation_folder(&file_str, pr_number, range_lines);
+
+        let files = get_files_from_folder(&mutation_folder.unwrap()).unwrap_or_default();
         
         for file in &files{
             let diff = get_file_diff(originFile.clone(), file.into()).unwrap_or_default();
             let patch_hash = get_hash_from_diff(&diff).unwrap_or_default();
             let mut file_path = String::new();
 
-            file_path = file.to_string_lossy().into_owned();;
+            file_path = originFile.clone().unwrap_or_default().to_string_lossy().into_owned();
 
             //run_id
             println!("run_id: {}", run_id.to_string());
 
             //diff
-            println!("diff: {}", diff);
+            //println!("diff: {}", diff);
 
             //patch_hash
             println!("patch_hash: {}", patch_hash);
@@ -105,16 +138,16 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
 
             //operator
             println!("operator: {}", operator);
-
+            let dummydiff = "";
             connection.execute("
 
                 INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator)
                 VALUES (?1, ?2, ?3, ?4, ?5);
-            ", params![run_id, diff, patch_hash, file_path, operator],)?;
+            ", params![run_id, dummydiff, patch_hash, file_path, operator],)?;
 
         }
-    }
-
+        
+    };
     Ok(())
 }
 
