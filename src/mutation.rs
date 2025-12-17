@@ -60,6 +60,7 @@ pub async fn run_mutation(
             || file_changed.contains("fuzz")
             || file_changed.contains("bench")
             || file_changed.contains("util")
+            || file_changed.contains("sanitizer_supressions")
             || file_changed.ends_with(".txt")
         {
             continue;
