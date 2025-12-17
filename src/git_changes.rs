@@ -68,6 +68,7 @@ pub async fn get_changed_files(pr_number: Option<u32>) -> Result<Vec<String>> {
     let diff_args = &[
         "diff",
         "--name-only",
+        "--diff-filter=d",
         &format!("{}/master...HEAD", used_remote),
     ];
     match run_git_command(diff_args).await {
