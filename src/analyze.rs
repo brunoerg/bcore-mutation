@@ -1,4 +1,4 @@
-use crate::sqlite::update_status_mutant;
+use crate::sqlite::{update_status_mutant, update_command_to_test_mutant};
 use crate::error::{MutationError, Result};
 use crate::report::generate_report;
 use std::fs;
@@ -155,6 +155,7 @@ pub async fn analyze_folder(
             }
             num_killed += 1
         }
+        update_command_to_test_mutant(&test_command, &file_path, db_path.clone(), run_id.clone().unwrap())?;
     }
 
     // Generate report

@@ -5,10 +5,39 @@ use rusqlite::params;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Result, Params};
 
 use crate::git_changes::{get_commit_hash};
 use crate::error::{MutationError};
+
+fn update_mutants_table<P>(connection: &Connection, sql: &str, params: P) -> Result<(), MutationError>
+where
+    P: Params,
+{
+    println!("params:");
+    connection.execute(sql, params)?;
+    Ok(())
+}
+
+pub fn update_command_to_test_mutant(
+    command: &str,
+    fullpath: &PathBuf,
+    db_path: Option<PathBuf>,
+    run_id: i64,
+    ) -> Result<(), MutationError>{ 
+
+    let db_path = db_path.unwrap();
+    let connection = Connection::open(db_path.clone())?;
+
+    let sql_command = "UPDATE mutants
+        SET command_to_test = ?
+        WHERE run_id = ? AND 
+        file_name = ?";
+
+    let params = params![command, run_id, fullpath.to_str()];
+    update_mutants_table(&connection, sql_command, params)?;
+    Ok(())
+}
 
 pub fn update_status_mutant(killed: bool,
     fullpath: &PathBuf,
@@ -19,7 +48,13 @@ pub fn update_status_mutant(killed: bool,
     let db_path = db_path.unwrap();
     
     let connection = Connection::open(db_path.clone())?;
-    
+
+    let sql_command = 
+    "UPDATE mutants
+        SET status = ?
+        WHERE run_id = ? AND 
+        file_name = ?";
+        
     //status killed
     if killed {
         println!("killed ");
@@ -28,13 +63,8 @@ pub fn update_status_mutant(killed: bool,
             fullpath.display(),
             db_path.clone().display());
 
-        connection.execute(
-            "UPDATE mutants
-            SET status = ?
-            WHERE run_id = ? AND 
-            file_name = ?",
-            params!["killed", run_id, fullpath.to_str()],
-        )?;
+        let params = params!["killed", run_id, fullpath.to_str()];
+        update_mutants_table(&connection, sql_command, params)?;
 
     //status survived
     } else if !killed {
@@ -44,20 +74,11 @@ pub fn update_status_mutant(killed: bool,
             fullpath.display(),
             db_path.clone().display());
 
-        connection.execute(
-            "UPDATE mutants
-            SET status = ?
-            WHERE run_id = ? AND
-            file_name = ?",
-            params!["survived", run_id, fullpath.to_str()],
-        )?;
+        let params = params!["survived", run_id, fullpath.to_str()];
+        update_mutants_table(&connection, sql_command, params)?;
 
     };
     Ok(())
-}
-
-pub fn update_command_to_test_mutant(){
-//TODO after running analyze get the command and update in the table
 }
 
 fn get_hash_from_diff(diff: &str) -> Result<String, Box<dyn Error>> {
