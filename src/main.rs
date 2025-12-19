@@ -92,6 +92,14 @@ enum Commands {
         /// Maximum acceptable survival rate (0.3 = 30%)
         #[arg(long, default_value = "0.75")]
         survival_threshold: f64,
+
+        /// Optional path to SQLite database file (default: mutation.db)
+        #[arg(long, value_name = "PATH")]
+        sqlite: Option<Option<PathBuf>>,
+
+        /// Run ID stored in SQLite
+        #[arg(long)]
+        runid: Option<i64>,
     },
 }
 
@@ -187,7 +195,8 @@ async fn main() -> Result<()> {
                     path,
                     run_id,
                     if pr == 0 { None } else { Some(pr) },
-                    file).map_err(Error::from)?;
+                    file,
+                    range_lines).map_err(Error::from)?;
             }
 
         }
@@ -197,8 +206,33 @@ async fn main() -> Result<()> {
             jobs,
             command,
             survival_threshold,
+            sqlite,
+            runid,
         } => {
-            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold).await?;
+
+            let db_path = match sqlite {
+                Some(Some(path)) => {
+                    let mut full_path = PathBuf::from("db");
+                    full_path.push(path);
+                    Some(full_path)
+                }
+                Some(None) => Some(PathBuf::from("db/mutation.db")),
+                None => None,
+            };
+
+            if runid.is_none() {
+                return Err(MutationError::InvalidInput(
+                    "--sqlite requires --runid".to_string(),
+                ));
+            }
+
+            if runid.is_some() && db_path.is_none() {
+                return Err(MutationError::InvalidInput(
+                    "--runid requires --sqlite".to_string(),
+                ));
+            }
+
+            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, db_path, runid).await?;
         }
     }
 

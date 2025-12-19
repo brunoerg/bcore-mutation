@@ -1,3 +1,4 @@
+use crate::sqlite::{update_status_mutant, update_command_to_test_mutant};
 use crate::error::{MutationError, Result};
 use crate::report::generate_report;
 use std::fs;
@@ -13,6 +14,8 @@ pub async fn run_analysis(
     jobs: u32,
     timeout_secs: u64,
     survival_threshold: f64,
+    db_path: Option<PathBuf>,
+    run_id: Option<i64>,
 ) -> Result<()> {
     let folders = if let Some(folder_path) = folder {
         vec![folder_path]
@@ -28,6 +31,8 @@ pub async fn run_analysis(
             jobs,
             timeout_secs,
             survival_threshold,
+            db_path.clone(),
+            run_id,
         )
         .await?;
     }
@@ -58,6 +63,8 @@ pub async fn analyze_folder(
     jobs: u32,
     timeout_secs: u64,
     survival_threshold: f64,
+    db_path: Option<PathBuf>,
+    run_id: Option<i64>,
 ) -> Result<()> {
     let mut num_killed: u64 = 0;
     let mut not_killed = Vec::new();
@@ -125,11 +132,30 @@ pub async fn analyze_folder(
 
         if result {
             println!("NOT KILLED ❌");
+    
+            if let (Some(_), Some(run_id)) = (&db_path, run_id) {
+                update_status_mutant(
+                    false,
+                    &file_path,
+                    db_path.clone(),
+                    run_id,
+                )?;
+            }
             not_killed.push(file_name.clone());
         } else {
             println!("KILLED ✅");
+
+            if let (Some(_), Some(run_id)) = (&db_path, run_id) {
+                update_status_mutant(
+                    true,
+                    &file_path,
+                    db_path.clone(),
+                    run_id,
+                )?;
+            }
             num_killed += 1
         }
+        update_command_to_test_mutant(&test_command, &file_path, db_path.clone(), run_id.clone().unwrap())?;
     }
 
     // Generate report

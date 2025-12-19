@@ -5,14 +5,81 @@ use rusqlite::params;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Result, Params};
 
 use crate::git_changes::{get_commit_hash};
 use crate::error::{MutationError};
-use crate::analyze::{find_mutation_folders};
 
-pub fn update_status_mutant() {
-//TODO after running analyze change status to killed or survived
+fn update_mutants_table<P>(connection: &Connection, sql: &str, params: P) -> Result<(), MutationError>
+where
+    P: Params,
+{
+    connection.execute(sql, params)?;
+
+    Ok(())
+}
+
+pub fn update_command_to_test_mutant(
+    command: &str,
+    fullpath: &PathBuf,
+    db_path: Option<PathBuf>,
+    run_id: i64,
+    ) -> Result<(), MutationError>{ 
+
+    let db_path = db_path.unwrap();
+    let connection = Connection::open(db_path.clone())?;
+    let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
+
+    let sql_command = "UPDATE mutants
+        SET command_to_test = ?
+        WHERE run_id = ? AND 
+        file_name = ?";
+
+    let params = params![command, run_id, fullpath.to_str()];
+    update_mutants_table(&connection, sql_command, params)?;
+    Ok(())
+}
+
+pub fn update_status_mutant(killed: bool,
+    fullpath: &PathBuf,
+    db_path: Option<PathBuf>,
+    run_id: i64,
+) -> Result<(), MutationError>{
+
+    let db_path = db_path.unwrap();    
+    let connection = Connection::open(db_path.clone())?;
+    let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
+
+    let sql_command = 
+    "UPDATE mutants
+        SET status = ?
+        WHERE run_id = ? AND 
+        file_name = ?";
+        
+    //status killed
+    if killed {
+        println!("killed ");
+
+        println!("SQLite option: Updating mutant {} on {} status changed to killed",
+            fullpath.display(),
+            db_path.clone().display());
+
+        let params = params!["killed", run_id, fullpath.to_str()];
+        update_mutants_table(&connection, sql_command, params)?;
+
+    //status survived
+    } else if !killed {
+        println!("survived ");
+
+        println!("SQLite option: Updating mutant {} on {} status changed to killed",
+            fullpath.display(),
+            db_path.clone().display());
+
+        let params = params!["survived", run_id, fullpath.to_str()];
+        update_mutants_table(&connection, sql_command, params)?;
+
+    };
+    Ok(())
 }
 
 fn get_hash_from_diff(diff: &str) -> Result<String, Box<dyn Error>> {
@@ -103,7 +170,7 @@ fn check_mutation_folder(
     Ok(PathBuf::from(folder))
 }
 
-pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, originFile: Option<PathBuf>, range_lines: Option<(usize, usize)>) -> Result<()> {
+pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, origin_file: Option<PathBuf>, range_lines: Option<(usize, usize)>) -> Result<()> {
     println!("SQLite option: Storing mutants on {}", db_path.display());
     let connection = Connection::open(db_path)?;
     let operator: String = "None".to_string();
@@ -111,18 +178,17 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
     //get mutants folder
 
     //TODO continuar aqui, verificando o check_mutation
-    if let Some(file_path) = originFile.clone() {
+    if let Some(file_path) = origin_file.clone() {
         let file_str = file_path.to_string_lossy().to_string();
         let mutation_folder = check_mutation_folder(&file_str, pr_number, range_lines);
 
         let files = get_files_from_folder(&mutation_folder.unwrap()).unwrap_or_default();
         
         for file in &files{
-            let diff = get_file_diff(originFile.clone(), file.into()).unwrap_or_default();
+            let diff = get_file_diff(origin_file.clone(), file.into()).unwrap_or_default();
             let patch_hash = get_hash_from_diff(&diff).unwrap_or_default();
-            let mut file_path = String::new();
-
-            file_path = originFile.clone().unwrap_or_default().to_string_lossy().into_owned();
+            
+            let file_path = origin_file.clone().unwrap_or_default().to_string_lossy().into_owned();
 
             //run_id
             println!("run_id: {}", run_id.to_string());
@@ -138,12 +204,15 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
 
             //operator
             println!("operator: {}", operator);
+
+            //filename
+            let filename = file.to_str();
             let dummydiff = "";
             connection.execute("
 
-                INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator)
-                VALUES (?1, ?2, ?3, ?4, ?5);
-            ", params![run_id, dummydiff, patch_hash, file_path, operator],)?;
+                INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator, file_name)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6);
+            ", params![run_id, dummydiff, patch_hash, file_path, operator, filename],)?;
 
         }
         
@@ -247,7 +316,7 @@ fn _check_schema(connection: &Connection) -> Result<()> {
         ("runs", vec!["id", "project_id", "commit_hash", "pr_number", "created_at", "tool_version"]),
         ("mutants", vec![
             "id", "run_id", "diff", "patch_hash", "status", "killed", 
-            "command_to_test", "file_path", "operator"
+            "command_to_test", "file_path", "operator", "file_name"
         ]),
     ];
 
@@ -313,6 +382,7 @@ fn _createdb(connection: &Connection) -> Result<()> {
             command_to_test     TEXT,
             file_path           TEXT NOT NULL,
             operator            TEXT NOT NULL,
+            file_name           TEXT NOT NULL,
             FOREIGN KEY(run_id) REFERENCES runs(id)
         );
 
