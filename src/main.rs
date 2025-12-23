@@ -220,6 +220,12 @@ async fn main() -> Result<()> {
                 None => None,
             };
 
+            if runid.is_none() {
+                return Err(MutationError::InvalidInput(
+                    "--sqlite requires --runid".to_string(),
+                ));
+            }
+
             if runid.is_some() && db_path.is_none() {
                 return Err(MutationError::InvalidInput(
                     "--runid requires --sqlite".to_string(),
