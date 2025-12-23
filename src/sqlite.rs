@@ -14,8 +14,8 @@ fn update_mutants_table<P>(connection: &Connection, sql: &str, params: P) -> Res
 where
     P: Params,
 {
-    println!("params:");
     connection.execute(sql, params)?;
+
     Ok(())
 }
 
@@ -28,6 +28,7 @@ pub fn update_command_to_test_mutant(
 
     let db_path = db_path.unwrap();
     let connection = Connection::open(db_path.clone())?;
+    let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
     let sql_command = "UPDATE mutants
         SET command_to_test = ?
@@ -45,9 +46,9 @@ pub fn update_status_mutant(killed: bool,
     run_id: i64,
 ) -> Result<(), MutationError>{
 
-    let db_path = db_path.unwrap();
-    
+    let db_path = db_path.unwrap();    
     let connection = Connection::open(db_path.clone())?;
+    let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
     let sql_command = 
     "UPDATE mutants
