@@ -29,6 +29,9 @@ pub enum MutationError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("Db path error")]
+    MissingDbPath,
+
     #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
 }

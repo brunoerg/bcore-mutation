@@ -26,7 +26,7 @@ pub fn update_command_to_test_mutant(
     run_id: i64,
     ) -> Result<(), MutationError>{ 
 
-    let db_path = db_path.unwrap();
+    let db_path = db_path.ok_or(MutationError::MissingDbPath)?;
     let connection = Connection::open(db_path.clone())?;
     let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
@@ -46,7 +46,7 @@ pub fn update_status_mutant(killed: bool,
     run_id: i64,
 ) -> Result<(), MutationError>{
 
-    let db_path = db_path.unwrap();    
+    let db_path = db_path.ok_or(MutationError::MissingDbPath)?;
     let connection = Connection::open(db_path.clone())?;
     let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
@@ -56,10 +56,8 @@ pub fn update_status_mutant(killed: bool,
         WHERE run_id = ? AND 
         file_name = ?";
         
-    //status killed
+    //status
     if killed {
-        println!("killed ");
-
         println!("SQLite option: Updating mutant {} on {} status changed to killed",
             fullpath.display(),
             db_path.clone().display());
@@ -67,11 +65,8 @@ pub fn update_status_mutant(killed: bool,
         let params = params!["killed", run_id, fullpath.to_str()];
         update_mutants_table(&connection, sql_command, params)?;
 
-    //status survived
     } else if !killed {
-        println!("survived ");
-
-        println!("SQLite option: Updating mutant {} on {} status changed to killed",
+        println!("SQLite option: Updating mutant {} on {} status changed to survived",
             fullpath.display(),
             db_path.clone().display());
 
@@ -98,7 +93,7 @@ fn get_file_diff(mainfile: Option<PathBuf>, comparefile: PathBuf) -> Result<Stri
         .arg(&comparefile)
         .output()?;
 
-    println!("Executing diff from files {:?} and  {:?}", mainfile, comparefile);
+    println!("Executing diff from files {:?} and  {:?} for storage", mainfile, comparefile);
 
     if output.status.success() {
         Ok(String::from("Compare files are equal!"))
@@ -138,7 +133,6 @@ fn get_files_from_folder(filepath: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>
     Ok(entries)
 }
 
-
 fn check_mutation_folder(
     file_to_mutate: &str,
     pr_number: Option<u32>,
@@ -175,47 +169,24 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
     let connection = Connection::open(db_path)?;
     let operator: String = "None".to_string();
 
-    //get mutants folder
-
-    //TODO continuar aqui, verificando o check_mutation
     if let Some(file_path) = origin_file.clone() {
         let file_str = file_path.to_string_lossy().to_string();
-        let mutation_folder = check_mutation_folder(&file_str, pr_number, range_lines);
+        let mutation_folder = check_mutation_folder(&file_str, pr_number, range_lines)?;
 
-        let files = get_files_from_folder(&mutation_folder.unwrap()).unwrap_or_default();
+        let files = get_files_from_folder(&mutation_folder).unwrap_or_default();
         
         for file in &files{
             let diff = get_file_diff(origin_file.clone(), file.into()).unwrap_or_default();
             let patch_hash = get_hash_from_diff(&diff).unwrap_or_default();
             
             let file_path = origin_file.clone().unwrap_or_default().to_string_lossy().into_owned();
-
-            //run_id
-            println!("run_id: {}", run_id.to_string());
-
-            //diff
-            //println!("diff: {}", diff);
-
-            //patch_hash
-            println!("patch_hash: {}", patch_hash);
-
-            //file_path
-            println!("file path: {:?}", file_path);
-
-            //operator
-            println!("operator: {}", operator);
-
-            //filename
             let filename = file.to_str();
-            let dummydiff = "";
-            connection.execute("
 
+            connection.execute("
                 INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator, file_name)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6);
-            ", params![run_id, dummydiff, patch_hash, file_path, operator, filename],)?;
-
+            ", params![run_id, diff, patch_hash, file_path, operator, filename],)?;
         }
-        
     };
     Ok(())
 }
@@ -232,19 +203,15 @@ pub fn store_run(db_path: &PathBuf, pr_number: Option<u32>) -> Result<i64> {
     )?;
 
     let project_id = proj_query_row.0;
-    println!("id: {}", project_id);
   
     let commit_hash = match get_commit_hash() {
         Ok(hash) => hash,
         Err(_) => "unknown".to_string(),
     };
 
-    println!("commit hash: {}", commit_hash);
-
     let tool_version = format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
     
     connection.execute("
-
         INSERT INTO  runs (project_id , commit_hash, pr_number, tool_version)
         VALUES (?1, ?2, ?3, ?4);
     ", params![project_id, commit_hash, pr_number, tool_version],)?;
@@ -288,7 +255,6 @@ fn _fill_projects_table(connection: &Connection) -> Result<()> {
         INSERT OR IGNORE INTO projects (id, name, repository_url)
         VALUES (1, 'Bitcoin Core', 'https://github.com/bitcoin/bitcoin');
     ", [])?;
-
     Ok(())
 }
 
@@ -336,7 +302,6 @@ fn _check_schema(connection: &Connection) -> Result<()> {
             }
         }
     }
-
     println!("SQLite option: Schema verified successfully.");
     Ok(())
 }
@@ -344,7 +309,6 @@ fn _check_schema(connection: &Connection) -> Result<()> {
 fn _createdb(connection: &Connection) -> Result<()> {
     println!("SQLite option:: New db detected initializing first fillment...");
 
-    // DB tables creation
     connection.execute_batch("
         PRAGMA foreign_keys = ON;
         
@@ -395,14 +359,12 @@ fn _createdb(connection: &Connection) -> Result<()> {
 
     println!("SQLite option: Ok batch");
 
-    //Filling projects table
     _fill_projects_table(&connection)?;
 
     Ok(())
 }
 
 pub fn check_db(db_path: &PathBuf) -> Result<()> {
-    
     println!("SQLite option: Checking if db exist...");
     let is_new_db = !db_path.exists();
     
