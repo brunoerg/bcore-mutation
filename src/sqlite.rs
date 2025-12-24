@@ -22,11 +22,10 @@ where
 pub fn update_command_to_test_mutant(
     command: &str,
     fullpath: &PathBuf,
-    db_path: Option<PathBuf>,
+    db_path: PathBuf,
     run_id: i64,
     ) -> Result<(), MutationError>{ 
 
-    let db_path = db_path.ok_or(MutationError::MissingDbPath)?;
     let connection = Connection::open(db_path.clone())?;
     let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
@@ -392,4 +391,186 @@ pub fn check_db(db_path: &PathBuf) -> Result<()> {
     }
 
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+    use tempfile::tempdir;
+    use std::fs::{self, File};
+    use tempfile::TempPath;
+    use tempfile::NamedTempFile;
+
+    fn setup_db() -> (Connection,TempPath) {
+        let temp_db = NamedTempFile::new().unwrap();
+        let db_path = temp_db.into_temp_path();
+        let connection = Connection::open(&db_path).unwrap();
+
+        (connection, db_path)
+    }
+
+    #[test]
+    #[allow(unused)]
+    fn test_db_creation_and_seed() {
+
+        let (connection, db_path) = setup_db();
+
+        println!("connection: {:?} \n path: {:?}", connection, db_path);
+        let db_creation_verify = _createdb(&connection);
+        assert!(db_creation_verify.is_ok());
+
+        let schema_verify = _check_schema(&connection);
+        assert!(schema_verify.is_ok());
+
+        let initial_row_verify = _check_initial_row(&connection);
+        assert!(initial_row_verify.is_ok());
+    }
+
+    #[test]
+    #[allow(unused)]
+    fn test_store_run_creates_row() {
+        let (connection, db_path) = setup_db();
+        _createdb(&connection).unwrap();
+
+        let run_id = store_run(&db_path.to_path_buf(), None).unwrap();
+        assert!(run_id > 0, "store_run must return a valid run_id");
+
+        let count: i64 = connection.query_row(
+            "SELECT count(*) FROM runs WHERE id=?1",
+            [run_id],
+            |row| row.get(0)
+        ).unwrap();
+        assert_eq!(count, 1, "Must exist exactly 1 run");
+    }
+
+    #[test]
+    #[allow(unused)]
+    fn test_store_mutants_inserts_rows() {
+        let (connection, db_path) = setup_db();
+
+        let dir = tempdir().unwrap();
+        let origin_file = dir.path().join("origin.rs");
+        File::create(&origin_file).unwrap();
+
+        let mutation_folder = dir.path().join("muts-origin-rs");
+        fs::create_dir_all(&mutation_folder).unwrap();
+
+        let mutant_file = mutation_folder.join("mutant1.rs");
+        File::create(&mutant_file).unwrap();
+
+        let run_id = 1;
+
+        let result = store_mutants(&db_path.to_path_buf(), run_id, None, Some(origin_file.clone()), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[allow(unused)]
+    fn test_update_status_mutant() {
+        let (connection, db_path) = setup_db();
+        _createdb(&connection).unwrap();
+
+        let dir = tempdir().unwrap();
+        let origin_file = dir.path().join("origin.rs");
+        let file_path = &origin_file;
+
+        let operator: String = "None".to_string();
+        let run_id = 1;
+
+        let origin_file = origin_file.to_str();
+
+        //Seed tables
+        connection.execute("
+            INSERT INTO runs (id, project_id, commit_hash)
+            VALUES (?1, ?2, ?3);
+        ", params![1, 1, "hash"]).unwrap();
+
+        connection.execute("
+            INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator, file_name)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6);
+        ", params![run_id, "killed diff", "", origin_file, operator, origin_file],).unwrap();
+
+        connection.execute("
+            INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator, file_name)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6);
+        ", params![run_id, "survived diff", "", origin_file, operator, origin_file],).unwrap();
+
+        let count: i64 = connection.query_row(
+            "SELECT count(*) FROM mutants;",
+            [],
+            |row| row.get(0)
+        ).unwrap();
+        println!("count: {:?}", count);
+        assert_eq!(count, 2, "Must exist exactly 2 mutants");
+
+        //Test for status killed
+        let result = update_status_mutant(true, &file_path, Some(db_path.to_path_buf()), 1);
+        assert!(result.is_ok());
+
+        let proj_query_row: (i32, String, String) = connection.query_row(
+            "SELECT id, status, diff FROM mutants WHERE run_id=?1 AND id=?2;",
+            [1, 1],
+            |row| Ok((row.get(0)?, row.get(1)?,row.get(2)?))
+        ).unwrap();
+
+        assert!(proj_query_row.0 == 1 && proj_query_row.1 == "killed" && proj_query_row.2 == "killed diff", "Status should've been updated to killed");
+
+        //Test for status survived
+        let result = update_status_mutant(false, &file_path, Some(db_path.to_path_buf()), 1);
+        assert!(result.is_ok());
+
+        let proj_query_row: (i32, String, String) = connection.query_row(
+            "SELECT id, status, diff FROM mutants WHERE run_id=?1 AND id=?2;",
+            [1, 2],
+            |row| Ok((row.get(0)?, row.get(1)?,row.get(2)?))
+        ).unwrap();
+
+        assert!(proj_query_row.0 == 2 && proj_query_row.1 == "survived" && proj_query_row.2 == "survived diff", "Status should've been updated to survived");
+    }
+
+    #[test]
+    #[allow(unused)]
+    fn test_update_command_mutant() {
+        let (connection, db_path) = setup_db();
+        _createdb(&connection).unwrap();
+
+        let dir = tempdir().unwrap();
+        let origin_file = dir.path().join("origin.rs");
+        let file_path = &origin_file;
+
+        let operator: String = "None".to_string();
+        let run_id = 1;
+
+        let origin_file = origin_file.to_str();
+
+        //Seed tables
+        connection.execute("
+            INSERT INTO runs (id, project_id, commit_hash)
+            VALUES (?1, ?2, ?3);
+        ", params![1, 1, "hash"]).unwrap();
+
+        connection.execute("
+            INSERT INTO  mutants (run_id , diff, patch_hash, file_path, operator, file_name)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6);
+        ", params![run_id, "command diff", "", origin_file, operator, origin_file],).unwrap();
+
+        let count: i64 = connection.query_row(
+            "SELECT count(*) FROM mutants;",
+            [],
+            |row| row.get(0)
+        ).unwrap();
+        println!("count: {:?}", count);
+        assert_eq!(count, 1, "Must exist exactly 1 mutant");
+
+        let result = update_command_to_test_mutant("command", file_path, db_path.to_path_buf(), run_id);
+        assert!(result.is_ok());
+
+        let proj_query_row: (i32, String, String) = connection.query_row(
+            "SELECT id, diff, command_to_test FROM mutants WHERE run_id=?1 AND id=?2;",
+            [1, 1],
+            |row| Ok((row.get(0)?, row.get(1)?,row.get(2)?))
+        ).unwrap();
+
+        assert!(proj_query_row.0 == 1 && proj_query_row.1 == "command diff" && proj_query_row.2 == "command", "Command should've been updated to command");
+    }
 }

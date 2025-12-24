@@ -155,7 +155,9 @@ pub async fn analyze_folder(
             }
             num_killed += 1
         }
-        update_command_to_test_mutant(&test_command, &file_path, db_path.clone(), run_id.clone().unwrap())?;
+        if let Some(db_path) = db_path.clone() {
+            update_command_to_test_mutant(&test_command, &file_path, db_path, run_id.clone().unwrap_or_default())?;
+        }
     }
 
     // Generate report
