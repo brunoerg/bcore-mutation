@@ -26,7 +26,7 @@ pub fn update_command_to_test_mutant(
     run_id: i64,
     ) -> Result<(), MutationError>{ 
 
-    let db_path = db_path.unwrap();
+    let db_path = db_path.ok_or(MutationError::MissingDbPath)?;
     let connection = Connection::open(db_path.clone())?;
     let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
@@ -46,7 +46,7 @@ pub fn update_status_mutant(killed: bool,
     run_id: i64,
 ) -> Result<(), MutationError>{
 
-    let db_path = db_path.unwrap();    
+    let db_path = db_path.ok_or(MutationError::MissingDbPath)?;
     let connection = Connection::open(db_path.clone())?;
     let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
@@ -66,7 +66,7 @@ pub fn update_status_mutant(killed: bool,
         update_mutants_table(&connection, sql_command, params)?;
 
     } else if !killed {
-        println!("SQLite option: Updating mutant {} on {} status changed to killed",
+        println!("SQLite option: Updating mutant {} on {} status changed to survived",
             fullpath.display(),
             db_path.clone().display());
 
@@ -171,9 +171,9 @@ pub fn store_mutants(db_path: &PathBuf, run_id: i64, pr_number: Option<u32>, ori
 
     if let Some(file_path) = origin_file.clone() {
         let file_str = file_path.to_string_lossy().to_string();
-        let mutation_folder = check_mutation_folder(&file_str, pr_number, range_lines);
+        let mutation_folder = check_mutation_folder(&file_str, pr_number, range_lines)?;
 
-        let files = get_files_from_folder(&mutation_folder.unwrap()).unwrap_or_default();
+        let files = get_files_from_folder(&mutation_folder).unwrap_or_default();
         
         for file in &files{
             let diff = get_file_diff(origin_file.clone(), file.into()).unwrap_or_default();
