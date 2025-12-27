@@ -210,7 +210,7 @@ async fn main() -> Result<()> {
             runid,
         } => {
 
-            let db_path = match sqlite {
+            let db_path = match sqlite.clone() {
                 Some(Some(path)) => {
                     let mut full_path = PathBuf::from("db");
                     full_path.push(path);
@@ -220,16 +220,18 @@ async fn main() -> Result<()> {
                 None => None,
             };
 
-            if runid.is_none() {
-                return Err(MutationError::InvalidInput(
-                    "--sqlite requires --runid".to_string(),
-                ));
-            }
+            if sqlite.is_some() {
+                if runid.is_none() {
+                    return Err(MutationError::InvalidInput(
+                        "--sqlite requires --runid".to_string(),
+                    ));
+                }
 
-            if runid.is_some() && db_path.is_none() {
-                return Err(MutationError::InvalidInput(
-                    "--runid requires --sqlite".to_string(),
-                ));
+                if runid.is_some() && db_path.is_none() {
+                    return Err(MutationError::InvalidInput(
+                        "--runid requires --sqlite".to_string(),
+                    ));
+                }
             }
 
             analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, db_path, runid).await?;

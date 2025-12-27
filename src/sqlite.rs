@@ -22,11 +22,10 @@ where
 pub fn update_command_to_test_mutant(
     command: &str,
     fullpath: &PathBuf,
-    db_path: Option<PathBuf>,
+    db_path: PathBuf,
     run_id: i64,
     ) -> Result<(), MutationError>{ 
 
-    let db_path = db_path.ok_or(MutationError::MissingDbPath)?;
     let connection = Connection::open(db_path.clone())?;
     let fullpath = fullpath.strip_prefix("./").unwrap_or(fullpath);
 
@@ -563,7 +562,7 @@ mod tests {
         println!("count: {:?}", count);
         assert_eq!(count, 1, "Must exist exactly 1 mutant");
 
-        let result = update_command_to_test_mutant("command", file_path, Some(db_path.to_path_buf()), run_id);
+        let result = update_command_to_test_mutant("command", file_path, db_path.to_path_buf(), run_id);
         assert!(result.is_ok());
 
         let proj_query_row: (i32, String, String) = connection.query_row(
