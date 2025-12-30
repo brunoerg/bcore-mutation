@@ -132,6 +132,17 @@ pub async fn get_lines_touched(file_path: &str) -> Result<Vec<usize>> {
     Ok(lines)
 }
 
+pub fn get_commit_hash() -> Result<String> {
+
+    let commit_hash = Command::new("git")
+    .args(["rev-parse", "HEAD"])
+    .output()
+    .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+    .unwrap_or_else(|_| "unknown".to_string());
+
+    Ok(commit_hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

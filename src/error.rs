@@ -26,6 +26,12 @@ pub enum MutationError {
     #[error("Walkdir error: {0}")]
     Walkdir(#[from] walkdir::Error),
 
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
+    #[error("Db path error")]
+    MissingDbPath,
+
     #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
 }
