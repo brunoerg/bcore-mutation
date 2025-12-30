@@ -72,7 +72,7 @@ enum Commands {
         folder: Option<PathBuf>,
 
         /// Timeout value per mutant in seconds
-        #[arg(short, long, default_value = "1000")]
+        #[arg(short, long, default_value = "300")]
         timeout: u64,
 
         /// Number of jobs to be used to compile Bitcoin Core
