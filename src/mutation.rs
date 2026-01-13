@@ -417,6 +417,7 @@ mod tests {
         assert!(should_skip_line("// This is a comment", "test.cpp", false).unwrap());
         assert!(should_skip_line("assert(condition);", "test.cpp", false).unwrap());
         assert!(should_skip_line("LogPrintf(\"test\");", "test.cpp", false).unwrap());
+        assert!(should_skip_line("LogDebug(\"test\");", "test.cpp", false).unwrap());
 
         // Test normal lines that shouldn't be skipped
         assert!(!should_skip_line("int x = 5;", "test.cpp", false).unwrap());
