@@ -148,6 +148,7 @@ pub fn get_do_not_mutate_patterns() -> Vec<&'static str> {
         "/*",
         "LogPrintf",
         "LogPrint",
+        "LogDebug",
         "strprintf",
         "G_FUZZING",
     ]
