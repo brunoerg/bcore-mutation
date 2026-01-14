@@ -20,6 +20,7 @@ pub fn get_regex_operators() -> Result<Vec<MutationOperator>, regex::Error> {
         (r"(\b\w+\b)--", r"$1++"),
         //(r"CAmount\s+(\w+)\s*=\s*([0-9]+)", r"CAmount $1 = $2 + 1"),
         //(r"CAmount\s+(\w+)\s*=\s*([0-9]+)", r"CAmount $1 = $2 - 1"),
+        ("Misbehaving", "//Misbehaving"),
         ("continue", "break"),
         ("break", "continue"),
         ("std::all_of", "std::any_of"),
