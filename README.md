@@ -119,6 +119,72 @@ Set timeout and parallel jobs:
 bcore-mutation analyze -j 8 -t 300 --survival-threshold 0.3
 ```
 
+### Storage
+
+Performed during the mutants generation (`mutation` command)
+
+Store generated mutants in the `db` folder (create if does not exists).
+Default folder: `mutation.db`: 
+
+```bash
+bcore-mutation mutate <options> --sqlite <db_name> 
+```
+
+### Examples:
+
+For a specific file, using the default database(`mutation.db`):
+
+```bash
+bcore-mutation mutate -f src/wallet/wallet.cpp --sqlite 
+```
+
+For a specific PR with custom database(`results.db`):
+
+```bash
+bcore-mutation mutate -p 12345 --sqlite results.db
+```
+
+### Update Storage
+
+Performed during the mutant analysis (`analyze` command)
+
+Perform full analysis for a specific run id (obligatory):
+
+```bash
+bcore-mutation analyze --sqlite --runid <run id number>
+```
+
+Perform analysis for a specific file:
+
+```bash
+bcore-mutation analyze -f <file name> --sqlite --run_id <run id number>
+```
+
+Perform analysis for a specific file with custom command to test:
+
+```bash
+bcore-mutation analyze -f <file name> --sqlite --run_id <run id number> -c <command to test>
+```
+
+### Examples:
+
+For general analysis, on run id 10:
+
+```bash
+bcore-mutation analyze --sqlite --run_id 10
+```
+
+Analysis on the muts-pr-wallet-1-150 folder generated on run id 1:
+
+```bash
+bcore-mutation analyze -f muts-pr-wallet-1-150 --sqlite --run_id 1
+```
+
+Perform analysis for muts-pr-wallet-1-150 folder of run id 2 with custom command `cmake --build build`:
+
+```bash
+bcore-mutation analyze -f muts-pr-wallet-1-150 --sqlite --run_id 2 -c "cmake --build build"
+
 ## Library Usage
 
 The tool can also be used as a Rust library:
