@@ -152,6 +152,8 @@ pub fn get_do_not_mutate_patterns() -> Vec<&'static str> {
         "LogDebug",
         "strprintf",
         "G_FUZZING",
+        // no-op for FindAndDelete
+        "if (nFound > 0)",
     ]
 }
 
