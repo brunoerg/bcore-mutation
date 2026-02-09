@@ -101,10 +101,13 @@ impl ExpertKnowledge {
             Regex::new(r"printf\s*\(")?,
             Regex::new(r"fprintf\s*\(")?,
             Regex::new(r"std::endl")?,
-            // Logging functions
+            // Logging functions - note the patterns match anywhere in the string
             Regex::new(r"LogPrintf\s*\(")?,
             Regex::new(r"LogPrint\s*\(")?,
-            Regex::new(r"log\.|logger\.|logging\.")?,
+            Regex::new(r"LogDebug\s*\(")?,
+            Regex::new(r"\blog\.")?,
+            Regex::new(r"\blogger\.")?,
+            Regex::new(r"\blogging\.")?,
             // Debug/trace functions
             Regex::new(r"assert\s*\(")?,
             Regex::new(r"DEBUG_")?,
@@ -186,7 +189,7 @@ impl ExpertKnowledge {
 
         let content = &node.content;
 
-        // Check function call patterns
+        // Check function call patterns first (most specific)
         if matches!(node.node_type, AstNodeType::FunctionCall) {
             for pattern in &self.arid_function_patterns {
                 if pattern.is_match(content) {
@@ -214,10 +217,12 @@ impl ExpertKnowledge {
             }
         }
 
-        // Check namespace patterns
-        for pattern in &self.arid_namespace_patterns {
-            if pattern.is_match(content) {
-                return true;
+        // Check namespace patterns (but not for function calls as that's too broad)
+        if !matches!(node.node_type, AstNodeType::FunctionCall) {
+            for pattern in &self.arid_namespace_patterns {
+                if pattern.is_match(content) {
+                    return true;
+                }
             }
         }
 
@@ -272,11 +277,131 @@ impl AridNodeDetector {
         result
     }
 
-    /// Check if a line should be mutated based on AST analysis
-    pub fn should_mutate_line(&mut self, line_content: &str, line_number: usize) -> bool {
-        // Create a simple AST node for the line
-        let node = self.parse_line_to_simple_ast(line_content, line_number);
+    /// Context-aware version that checks if a line should be mutated
+    /// Takes all lines and the current line index to understand control structures
+    pub fn should_mutate_line_with_context(
+        &mut self,
+        lines: &[String],
+        line_index: usize,
+    ) -> bool {
+        let line = &lines[line_index];
+        let trimmed = line.trim();
+
+        // Skip empty lines and closing braces
+        if trimmed.is_empty() || trimmed == "}" {
+            return false;
+        }
+
+        let line_number = line_index + 1;
+        let node_type = self.classify_line(trimmed);
+
+        // For control structures, check if their body is all arid
+        if matches!(
+            node_type,
+            AstNodeType::IfStatement | AstNodeType::ForLoop | AstNodeType::WhileLoop
+        ) {
+            // If the control structure body is all arid, don't mutate the control structure
+            return !self.is_control_structure_body_arid(lines, line_index);
+        }
+
+        // For lines inside control structures, we still need to check them individually
+        // unless they're part of an all-arid control structure (which is handled above)
+        let node = self.parse_line_to_simple_ast(trimmed, line_number);
         !self.is_arid(&node)
+    }
+
+    /// Check if a control structure's body contains only arid statements
+    fn is_control_structure_body_arid(&mut self, lines: &[String], start_index: usize) -> bool {
+        let start_line = lines[start_index].trim();
+
+        // Check if this is a single-line control structure (no braces)
+        // e.g., "if (condition) single_statement;"
+        if !start_line.contains('{') {
+            // Look for the statement on the same line or next line
+            let statement = if start_line.contains(')') && start_line.ends_with(';') {
+                // Extract everything after the closing paren
+                if let Some(pos) = start_line.rfind(')') {
+                    start_line[pos + 1..].trim()
+                } else {
+                    start_line
+                }
+            } else if start_index + 1 < lines.len() {
+                // Statement is on the next line
+                lines[start_index + 1].trim()
+            } else {
+                return false;
+            };
+
+            // Parse and check if the statement is arid
+            let node = self.parse_line_to_simple_ast(statement, start_index + 2);
+            return self.is_arid(&node);
+        }
+
+        // Find the opening brace
+        let mut brace_line_index = start_index;
+        if !start_line.contains('{') {
+            // Opening brace might be on the next line
+            brace_line_index = start_index + 1;
+            if brace_line_index >= lines.len() || !lines[brace_line_index].contains('{') {
+                return false;
+            }
+        }
+
+        // Find matching closing brace
+        let body_range = match self.find_matching_brace(lines, brace_line_index) {
+            Some(end_index) => (brace_line_index + 1, end_index),
+            None => return false,
+        };
+
+        // Check if all non-empty lines in the body are arid
+        let mut has_non_empty_line = false;
+        for i in body_range.0..body_range.1 {
+            let line = lines[i].trim();
+
+            // Skip empty lines and braces
+            if line.is_empty() || line == "{" || line == "}" {
+                continue;
+            }
+
+            has_non_empty_line = true;
+
+            // Parse the line and check if it's arid
+            let node = self.parse_line_to_simple_ast(line, i + 1);
+            if !self.is_arid(&node) {
+                // Found a non-arid line in the body
+                return false;
+            }
+        }
+
+        // If we found at least one non-empty line and all were arid, return true
+        // If no non-empty lines, return false (empty body is not arid)
+        has_non_empty_line
+    }
+
+    /// Find the index of the closing brace that matches the opening brace at start_index
+    fn find_matching_brace(&self, lines: &[String], start_index: usize) -> Option<usize> {
+        let mut brace_count = 0;
+        let mut found_opening = false;
+
+        for (i, line) in lines.iter().enumerate().skip(start_index) {
+            for ch in line.chars() {
+                match ch {
+                    '{' => {
+                        brace_count += 1;
+                        found_opening = true;
+                    }
+                    '}' => {
+                        brace_count -= 1;
+                        if found_opening && brace_count == 0 {
+                            return Some(i);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        None
     }
 
     /// Simple heuristic-based parsing to create AST nodes from single lines
@@ -318,12 +443,7 @@ impl AridNodeDetector {
             return AstNodeType::Class;
         }
 
-        // Function declarations/definitions
-        if self.is_function_declaration(line) {
-            return AstNodeType::Function;
-        }
-
-        // Control flow statements (compound nodes)
+        // Control flow statements (compound nodes) - check these before function declarations
         if line.starts_with("if ") || line.starts_with("if(") || line.contains("} else ") {
             return AstNodeType::IfStatement;
         }
@@ -349,9 +469,14 @@ impl AridNodeDetector {
             return AstNodeType::Assignment;
         }
 
-        // Function calls
+        // Function calls - check BEFORE function declarations
         if self.is_function_call(line) {
             return AstNodeType::FunctionCall;
+        }
+
+        // Function declarations/definitions - check AFTER function calls
+        if self.is_function_declaration(line) {
+            return AstNodeType::Function;
         }
 
         // Binary operators
@@ -375,10 +500,28 @@ impl AridNodeDetector {
 
     /// Check if line is a function declaration or definition
     fn is_function_declaration(&self, line: &str) -> bool {
+        // Function calls end with ); - those are NOT declarations
+        if line.trim().ends_with(");") {
+            return false;
+        }
+
+        // Function declarations typically:
+        // - Have a return type before the function name
+        // - End with { or just ; (not );)
+        // - Have modifiers like virtual, static, etc.
+
         let function_patterns = [
-            Regex::new(r"^\s*\w+\s+\w+\s*\([^)]*\)\s*[{;]?").unwrap(),
-            Regex::new(r"^\s*~?\w+\s*\([^)]*\)\s*[{;:]").unwrap(),
-            Regex::new(r"^\s*(?:template\s*<[^>]*>\s*)?(?:virtual\s+|static\s+|inline\s+)*[\w:<>*&\s]+\s+\w+\s*\([^)]*\)").unwrap(),
+            // Return type + function name + params + opening brace
+            Regex::new(r"^\s*\w+\s+\w+\s*\([^)]*\)\s*\{").unwrap(),
+            // Constructor/destructor with opening brace or initializer list
+            Regex::new(r"^\s*~?\w+\s*\([^)]*\)\s*[{:]").unwrap(),
+            // Template function
+            Regex::new(r"^\s*template\s*<[^>]*>").unwrap(),
+            // Function with qualifiers (virtual, static, inline, explicit, etc.)
+            Regex::new(r"^\s*(?:virtual\s+|static\s+|inline\s+|explicit\s+)").unwrap(),
+            // Return type + function name + params + ending semicolon (forward declaration)
+            // But make sure it doesn't end with );
+            Regex::new(r"^\s*\w+\s+\w+\s*\([^)]*\)\s*;\s*$").unwrap(),
         ];
 
         function_patterns
@@ -421,8 +564,11 @@ impl AridNodeDetector {
             && !self.is_function_declaration(line)
             && !self.is_variable_declaration(line)
             && !line.starts_with("if ")
+            && !line.starts_with("if(")
             && !line.starts_with("while ")
+            && !line.starts_with("while(")
             && !line.starts_with("for ")
+            && !line.starts_with("for(")
     }
 
     /// Check if line contains binary operations
@@ -499,15 +645,16 @@ impl AridNodeDetector {
     /// Export detailed analysis of which lines were filtered and why
     #[allow(dead_code)]
     pub fn analyze_file_detailed(&mut self, file_content: &str) -> DetailedAnalysis {
-        let lines: Vec<&str> = file_content.lines().collect();
+        let lines: Vec<String> = file_content.lines().map(|s| s.to_string()).collect();
         let mut analysis = DetailedAnalysis::new();
 
         for (idx, line) in lines.iter().enumerate() {
             let line_number = idx + 1;
+            let should_mutate = self.should_mutate_line_with_context(&lines, idx);
             let node = self.parse_line_to_simple_ast(line, line_number);
-            let is_arid = self.is_arid(&node);
+            let is_arid = !should_mutate;
             let reason = if is_arid {
-                self.get_arid_reason(&node)
+                self.get_arid_reason(&node, &lines, idx)
             } else {
                 "Not arid - will be mutated".to_string()
             };
@@ -526,7 +673,15 @@ impl AridNodeDetector {
 
     /// Get the reason why a node is considered arid
     #[allow(dead_code)]
-    fn get_arid_reason(&self, node: &AstNode) -> String {
+    fn get_arid_reason(&self, node: &AstNode, _lines: &[String], _line_index: usize) -> String {
+        // Check if this is a control structure with arid body
+        if matches!(
+            node.node_type,
+            AstNodeType::IfStatement | AstNodeType::ForLoop | AstNodeType::WhileLoop
+        ) {
+            return "Control structure with arid body (logging/debugging only)".to_string();
+        }
+
         if !node.is_simple() {
             return "Compound node - arid if all children are arid".to_string();
         }
@@ -656,14 +811,14 @@ pub struct AnalysisSummary {
     pub arid_lines: usize,
 }
 
-/// Integration with existing mutation system
+/// Integration with existing mutation system - context-aware version
 pub fn filter_mutatable_lines(lines: &[String], detector: &mut AridNodeDetector) -> Vec<usize> {
     lines
         .iter()
         .enumerate()
-        .filter_map(|(idx, line)| {
+        .filter_map(|(idx, _line)| {
             let line_number = idx + 1;
-            if detector.should_mutate_line(line, line_number) {
+            if detector.should_mutate_line_with_context(lines, idx) {
                 Some(line_number)
             } else {
                 None
@@ -699,6 +854,16 @@ mod tests {
             18,
         );
         assert!(!expert.is_arid_simple_node(&normal_node));
+
+        // Test LogDebug function call
+        let log_debug_node = AstNode::new(
+            AstNodeType::FunctionCall,
+            "LogDebug(BCLog::ADDRMAN, \"test\");".to_string(),
+            1,
+            0,
+            30,
+        );
+        assert!(expert.is_arid_simple_node(&log_debug_node), "LogDebug should be recognized as arid");
     }
 
     #[test]
@@ -749,7 +914,81 @@ mod tests {
 
         let mutatable_lines = filter_mutatable_lines(&lines, &mut detector);
 
-        // Should only include lines 1 and 4 (0-indexed: 0 and 3)
+        // Should only include lines 1 and 4
         assert_eq!(mutatable_lines, vec![1, 4]);
+    }
+
+    #[test]
+    fn test_if_statement_with_logging() {
+        let mut detector = AridNodeDetector::new().unwrap();
+
+        let lines = vec![
+            "if (!restore_bucketing) {".to_string(),
+            "    LogDebug(BCLog::ADDRMAN, \"Bucketing method was updated, re-bucketing addrman entries from disk\\n\");".to_string(),
+            "}".to_string(),
+        ];
+
+        // First, let's test that LogDebug itself is recognized as arid
+        let log_line = lines[1].trim();
+        let log_node = detector.parse_line_to_simple_ast(log_line, 2);
+        assert_eq!(log_node.node_type, AstNodeType::FunctionCall, "LogDebug line should be classified as FunctionCall");
+        assert!(detector.is_arid(&log_node), "LogDebug should be recognized as arid");
+
+        let mutatable_lines = filter_mutatable_lines(&lines, &mut detector);
+
+        // The if statement should NOT be mutated because it only contains logging
+        // Lines 2 (LogDebug) and 3 (closing brace) also should not be mutated
+        assert!(
+            mutatable_lines.is_empty(),
+            "Expected no mutatable lines, got: {:?}",
+            mutatable_lines
+        );
+    }
+
+    #[test]
+    fn test_if_statement_with_non_arid_body() {
+        let mut detector = AridNodeDetector::new().unwrap();
+
+        let lines = vec![
+            "if (condition) {".to_string(),
+            "    x = x + 1;".to_string(),
+            "}".to_string(),
+        ];
+
+        let mutatable_lines = filter_mutatable_lines(&lines, &mut detector);
+
+        // The if statement and the assignment should be mutated
+        assert!(
+            mutatable_lines.contains(&1),
+            "If statement should be mutatable"
+        );
+        assert!(
+            mutatable_lines.contains(&2),
+            "Assignment should be mutatable"
+        );
+    }
+
+    #[test]
+    fn test_if_statement_mixed_body() {
+        let mut detector = AridNodeDetector::new().unwrap();
+
+        let lines = vec![
+            "if (condition) {".to_string(),
+            "    LogDebug(BCLog::TEST, \"debug\");".to_string(),
+            "    x = x + 1;".to_string(),
+            "}".to_string(),
+        ];
+
+        let mutatable_lines = filter_mutatable_lines(&lines, &mut detector);
+
+        // The if statement should be mutated because it has non-arid content
+        assert!(
+            mutatable_lines.contains(&1),
+            "If statement with mixed body should be mutable"
+        );
+        assert!(
+            mutatable_lines.contains(&3),
+            "Non-arid line in body should be mutable"
+        );
     }
 }
