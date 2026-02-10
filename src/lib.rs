@@ -34,6 +34,7 @@
 //! }
 //! ```
 
+pub mod sqlite;
 pub mod analyze;
 pub mod ast_analysis;
 pub mod coverage;

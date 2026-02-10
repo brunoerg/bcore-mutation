@@ -1,3 +1,4 @@
+use anyhow::Error;
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ mod git_changes;
 mod mutation;
 mod operators;
 mod report;
+mod sqlite;
 
 use error::{MutationError, Result};
 
@@ -64,6 +66,10 @@ enum Commands {
         /// Add custom expert rule for arid node detection
         #[arg(long, value_name = "PATTERN")]
         add_expert_rule: Option<String>,
+
+        /// Optional path to SQLite database file (default: mutation.db)
+        #[arg(long, value_name = "PATH")]
+        sqlite: Option<Option<PathBuf>>,
     },
     /// Analyze mutants
     Analyze {
@@ -86,6 +92,14 @@ enum Commands {
         /// Maximum acceptable survival rate (0.3 = 30%)
         #[arg(long, default_value = "0.75")]
         survival_threshold: f64,
+
+        /// Optional path to SQLite database file (default: mutation.db)
+        #[arg(long, value_name = "PATH")]
+        sqlite: Option<Option<PathBuf>>,
+
+        /// Run ID stored in SQLite
+        #[arg(long)]
+        runid: Option<i64>,
     },
 }
 
@@ -105,7 +119,10 @@ async fn main() -> Result<()> {
             only_security_mutations,
             disable_ast_filtering,
             add_expert_rule,
+            sqlite,
         } => {
+            let mut run_id: i64 = 0;
+
             let skip_lines_map = if let Some(path) = skip_lines {
                 read_skip_lines(&path)?
             } else {
@@ -126,6 +143,16 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
+    
+            let db_path = match sqlite {
+                Some(Some(path)) => {
+                    let mut full_path = PathBuf::from("db");
+                    full_path.push(path);
+                    Some(full_path)
+                }
+                Some(None) => Some(PathBuf::from("db/mutation.db")),
+                None => None,
+            };
 
             if pr != 0 && file.is_some() {
                 return Err(MutationError::InvalidInput(
@@ -144,9 +171,14 @@ async fn main() -> Result<()> {
                 println!("Custom expert rule will be applied: {}", expert_rule);
             }
 
+            if let Some(ref path) = db_path {
+                sqlite::check_db(path).map_err(Error::from)?;
+                run_id = sqlite::store_run(path, if pr == 0 { None } else { Some(pr) }).map_err(Error::from)?;
+            }
+
             mutation::run_mutation(
                 if pr == 0 { None } else { Some(pr) },
-                file,
+                file.clone(),
                 one_mutant,
                 only_security_mutations,
                 range_lines,
@@ -157,6 +189,16 @@ async fn main() -> Result<()> {
                 add_expert_rule,
             )
             .await?;
+
+            if let Some(ref path) = db_path {
+                sqlite::store_mutants(
+                    path,
+                    run_id,
+                    if pr == 0 { None } else { Some(pr) },
+                    file,
+                    range_lines).map_err(Error::from)?;
+            }
+
         }
         Commands::Analyze {
             folder,
@@ -164,8 +206,35 @@ async fn main() -> Result<()> {
             jobs,
             command,
             survival_threshold,
+            sqlite,
+            runid,
         } => {
-            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold).await?;
+
+            let db_path = match sqlite.clone() {
+                Some(Some(path)) => {
+                    let mut full_path = PathBuf::from("db");
+                    full_path.push(path);
+                    Some(full_path)
+                }
+                Some(None) => Some(PathBuf::from("db/mutation.db")),
+                None => None,
+            };
+
+            if sqlite.is_some() {
+                if runid.is_none() {
+                    return Err(MutationError::InvalidInput(
+                        "--sqlite requires --runid".to_string(),
+                    ));
+                }
+
+                if runid.is_some() && db_path.is_none() {
+                    return Err(MutationError::InvalidInput(
+                        "--runid requires --sqlite".to_string(),
+                    ));
+                }
+            }
+
+            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, db_path, runid).await?;
         }
     }
 
