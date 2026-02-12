@@ -354,6 +354,30 @@ fn should_skip_line(line: &str, file_path: &str, is_unit_test: bool) -> Result<b
     Ok(false)
 }
 
+fn get_folder_path(file_to_mutate: &str) -> String {
+    let path = Path::new(file_to_mutate);
+
+    // Get the parent directory
+    if let Some(parent) = path.parent() {
+        let parent_str = parent.to_str().unwrap_or("");
+
+        // Remove "src/" prefix if it exists
+        let without_src = parent_str.strip_prefix("src/")
+            .or_else(|| parent_str.strip_prefix("src"))
+            .unwrap_or(parent_str);
+
+        // If we're left with something after removing src, return it
+        // Otherwise return empty string
+        if without_src.is_empty() || without_src == "src" {
+            String::new()
+        } else {
+            without_src.to_string()
+        }
+    } else {
+        String::new()
+    }
+}
+
 fn write_mutation(
     file_to_mutate: &str,
     mutated_content: &str,
@@ -369,25 +393,34 @@ fn write_mutation(
         ".cpp"
     };
 
-    let file_name = Path::new(file_to_mutate)
+    let folders = get_folder_path(file_to_mutate);
+
+    let base_file_name = Path::new(file_to_mutate)
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| MutationError::InvalidInput("Invalid file path".to_string()))?;
 
+    // Combine folders with base filename
+    let file_name = if folders.is_empty() {
+        base_file_name.to_string()
+    } else {
+        format!("{}/{}", folders, base_file_name)
+    };
+
     let ext = file_extension.trim_start_matches('.');
     let folder = if let Some(pr) = pr_number {
-        format!("muts-pr-{}-{}-{}", pr, file_name, ext)
+        format!("muts-pr-{}-{}-{}", pr, file_name.replace('/', "-"), ext)
     } else if let Some(range) = range_lines {
-        format!("muts-pr-{}-{}-{}", file_name, range.0, range.1)
+        format!("muts-pr-{}-{}-{}", file_name.replace('/', "-"), range.0, range.1)
     } else {
-        format!("muts-{}-{}", file_name, ext)
+        format!("muts-{}-{}", file_name.replace('/', "-"), ext)
     };
 
     create_mutation_folder(&folder, file_to_mutate)?;
 
     let mutator_file = format!(
         "{}/{}.mutant.{}{}",
-        folder, file_name, mutant_index, file_extension
+        folder, base_file_name, mutant_index, file_extension
     );
     fs::write(mutator_file, mutated_content)?;
 
