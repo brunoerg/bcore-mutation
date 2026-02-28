@@ -22,6 +22,12 @@ pub struct FileToMutate {
 /// Chunk size for DB batch inserts.
 const DB_BATCH_SIZE: usize = 100;
 
+/// Serialize execution config options into a JSON string for the runs table.
+/// Returns `None` when there is nothing worth recording.
+fn build_config_json(range_lines: Option<(usize, usize)>) -> Option<String> {
+    range_lines.map(|(start, end)| format!("{{\"range\":[{},{}]}}", start, end))
+}
+
 pub async fn run_mutation(
     pr_number: Option<u32>,
     file: Option<PathBuf>,
@@ -44,7 +50,14 @@ pub async fn run_mutation(
         let project_id = db.get_bitcoin_core_project_id()?;
         let commit_hash = get_commit_hash().await.unwrap_or_else(|_| "unknown".to_string());
         let tool_version = env!("CARGO_PKG_VERSION");
-        let run_id = db.create_run(project_id, &commit_hash, tool_version, pr_number)?;
+        let config_json = build_config_json(range_lines);
+        let run_id = db.create_run(
+            project_id,
+            &commit_hash,
+            tool_version,
+            pr_number,
+            config_json.as_deref(),
+        )?;
         println!("SQLite: created run id={} in {}", run_id, path.display());
         db_and_run = Some((db, run_id));
     }
