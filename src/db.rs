@@ -154,26 +154,41 @@ impl Database {
         Ok(())
     }
 
-    /// Return all mutants belonging to `run_id`.
-    pub fn get_mutants_for_run(&self, run_id: i64) -> Result<Vec<MutantRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, diff, file_path
-             FROM mutants
-             WHERE run_id = ?1",
-        )?;
-        let rows = stmt.query_map(params![run_id], |row| {
-            Ok(MutantRow {
-                id: row.get(0)?,
-                diff: row.get(1)?,
-                file_path: row.get(2)?,
-            })
-        })?;
+    /// Return mutants belonging to `run_id`, optionally filtered by `file_path`.
+    pub fn get_mutants_for_run(
+        &self,
+        run_id: i64,
+        file_path: Option<&str>,
+    ) -> Result<Vec<MutantRow>> {
+        let sql = if file_path.is_some() {
+            "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1 AND file_path = ?2"
+        } else {
+            "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1"
+        };
 
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
+        let mut stmt = self.conn.prepare(sql)?;
+
+        let rows: Vec<MutantRow> = if let Some(fp) = file_path {
+            stmt.query_map(params![run_id, fp], |row| {
+                Ok(MutantRow {
+                    id: row.get(0)?,
+                    diff: row.get(1)?,
+                    file_path: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        } else {
+            stmt.query_map(params![run_id], |row| {
+                Ok(MutantRow {
+                    id: row.get(0)?,
+                    diff: row.get(1)?,
+                    file_path: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        };
+
+        Ok(rows)
     }
 
     /// Update the status and command_to_test for a single mutant.

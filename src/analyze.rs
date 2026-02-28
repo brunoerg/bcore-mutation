@@ -17,6 +17,7 @@ pub async fn run_analysis(
     survival_threshold: f64,
     sqlite_path: Option<PathBuf>,
     run_id: Option<i64>,
+    file_path: Option<String>,
 ) -> Result<()> {
     // DB-based analysis mode: read mutants from DB and test them.
     if let (Some(ref path), Some(rid)) = (sqlite_path.as_ref(), run_id) {
@@ -28,7 +29,7 @@ pub async fn run_analysis(
         let db = Database::open(path)?;
         db.ensure_schema()?;
         db.seed_projects()?;
-        return run_db_analysis(&db, rid, &command, timeout_secs).await;
+        return run_db_analysis(&db, rid, &command, timeout_secs, file_path.as_deref()).await;
     }
 
     // Folder-based analysis mode (existing behaviour).
@@ -53,17 +54,22 @@ pub async fn run_analysis(
     Ok(())
 }
 
-/// Test all pending mutants in `run_id` from the database.
+/// Test all pending mutants in `run_id` from the database, optionally filtered by `file_path`.
 async fn run_db_analysis(
     db: &Database,
     run_id: i64,
     command: &str,
     timeout_secs: u64,
+    file_path: Option<&str>,
 ) -> Result<()> {
-    let mutants = db.get_mutants_for_run(run_id)?;
+    let mutants = db.get_mutants_for_run(run_id, file_path)?;
     let total = mutants.len();
 
-    println!("* {} MUTANTS in run_id={} *", total, run_id);
+    if let Some(fp) = file_path {
+        println!("* {} MUTANTS in run_id={} (file: {}) *", total, run_id, fp);
+    } else {
+        println!("* {} MUTANTS in run_id={} *", total, run_id);
+    }
 
     if total == 0 {
         return Err(MutationError::InvalidInput(format!(
