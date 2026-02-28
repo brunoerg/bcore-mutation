@@ -328,12 +328,16 @@ pub async fn mutate_file(
                 )?;
 
                 // Collect mutant metadata for DB persistence.
-                let diff = generate_diff(
-                    file_to_mutate,
-                    line_num,
-                    line_before_mutation,
-                    &line_mutated,
-                );
+                let diff = match generate_diff(file_to_mutate, &mutated_content).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!(
+                            "  Warning: could not generate diff for mutant at line {}: {}",
+                            line_num, e
+                        );
+                        continue;
+                    }
+                };
                 let patch_hash = compute_patch_hash(&diff);
                 let operator_label =
                     format!("{} ==> {}", operator.pattern.as_str(), operator.replacement);

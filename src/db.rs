@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{MutationError, Result};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -193,15 +193,59 @@ pub fn compute_patch_hash(diff: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Build a minimal unified-diff patch for a single-line substitution.
-/// The produced patch is suitable for `git apply`.
-pub fn generate_diff(
-    file_path: &str,
-    line_num: usize,
-    original: &str,
-    mutated: &str,
-) -> String {
-    format!(
-        "--- a/{file_path}\n+++ b/{file_path}\n@@ -{line_num},1 +{line_num},1 @@\n-{original}\n+{mutated}\n",
-    )
+/// Generate a proper unified diff by running `git diff --no-index` between the
+/// original file on disk and a temp file containing `mutated_content`.
+/// The resulting patch includes context lines and is suitable for `git apply`.
+pub async fn generate_diff(file_path: &str, mutated_content: &str) -> Result<String> {
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    use tokio::process::Command;
+
+    let mut tmp = NamedTempFile::new()?;
+    tmp.write_all(mutated_content.as_bytes())?;
+    tmp.flush()?;
+
+    let tmp_path = tmp.path().to_string_lossy().to_string();
+
+    // `git diff --no-index` exits with 1 when differences exist — that is expected.
+    let output = Command::new("git")
+        .args(["diff", "--no-index", "--", file_path, &tmp_path])
+        .output()
+        .await
+        .map_err(|e| MutationError::Git(format!("git diff failed to spawn: {}", e)))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    if stdout.is_empty() {
+        return Err(MutationError::Git(format!(
+            "git diff produced no output for {}",
+            file_path
+        )));
+    }
+
+    // Fix the temp-file path back to the real file path in the diff headers.
+    // `git diff --no-index` shows the second argument's path in `+++ b/` and
+    // `diff --git … b/…`; replace those with `file_path`.
+    let fixed = stdout
+        .lines()
+        .map(|line| {
+            if line.starts_with("+++ ") {
+                format!("+++ b/{}", file_path)
+            } else if line.starts_with("diff --git ") {
+                format!("diff --git a/{} b/{}", file_path, file_path)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Preserve trailing newline present in git diff output.
+    let fixed = if stdout.ends_with('\n') {
+        fixed + "\n"
+    } else {
+        fixed
+    };
+
+    Ok(fixed)
 }
