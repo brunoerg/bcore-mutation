@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS runs (
   commit_hash     TEXT NOT NULL,
   pr_number       INTEGER,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  tool_version    TEXT
+  tool_version    TEXT,
+  config_json     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_project_created ON runs(project_id, created_at DESC);
@@ -74,9 +75,22 @@ impl Database {
         Ok(Database { conn })
     }
 
-    /// Create tables and indexes if they do not yet exist.
+    /// Create tables and indexes if they do not yet exist, and apply any
+    /// additive migrations needed for older databases.
     pub fn ensure_schema(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA)?;
+        // Migration: add config_json to runs if the column is missing.
+        // ALTER TABLE ADD COLUMN fails with "duplicate column name" when the
+        // column already exists; silence that specific error so the function
+        // is idempotent on databases created before this column was added.
+        if let Err(e) = self
+            .conn
+            .execute_batch("ALTER TABLE runs ADD COLUMN config_json TEXT;")
+        {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
         Ok(())
     }
 
@@ -106,11 +120,12 @@ impl Database {
         commit_hash: &str,
         tool_version: &str,
         pr_number: Option<u32>,
+        config_json: Option<&str>,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO runs (project_id, commit_hash, tool_version, pr_number)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![project_id, commit_hash, tool_version, pr_number],
+            "INSERT INTO runs (project_id, commit_hash, tool_version, pr_number, config_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![project_id, commit_hash, tool_version, pr_number, config_json],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
