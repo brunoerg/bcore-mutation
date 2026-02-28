@@ -18,16 +18,17 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Generate mutants for a specific file with AST filtering
 //!     mutation::run_mutation(
-//!         None,                    // PR number
+//!         None,                        // PR number
 //!         Some("src/test.cpp".into()), // file path
-//!         false,                   // one_mutant
-//!         false,                   // only_security_mutations
-//!         None,                    // range_lines
-//!         None,                    // coverage
-//!         false,                   // test_only
-//!         HashMap::new(),          // skip_lines
-//!         true,                    // enable_ast_filtering
-//!         None,                    // custom_expert_rule
+//!         false,                       // one_mutant
+//!         false,                       // only_security_mutations
+//!         None,                        // range_lines
+//!         None,                        // coverage
+//!         false,                       // test_only
+//!         HashMap::new(),              // skip_lines
+//!         true,                        // enable_ast_filtering
+//!         None,                        // custom_expert_rule
+//!         None,                        // sqlite_path
 //!     ).await?;
 //!
 //!     Ok(())
@@ -37,6 +38,7 @@
 pub mod analyze;
 pub mod ast_analysis;
 pub mod coverage;
+pub mod db;
 pub mod error;
 pub mod git_changes;
 pub mod mutation;
