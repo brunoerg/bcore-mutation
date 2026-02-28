@@ -25,6 +25,8 @@ chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 walkdir = "2.4"
 rayon = "1.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
 tempfile = "3.8"
 
 [dev-dependencies]
