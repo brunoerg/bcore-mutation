@@ -78,6 +78,17 @@ async fn run_db_analysis(
     for (i, mutant) in mutants.iter().enumerate() {
         println!("[{}/{}] Analyzing mutant id={}", i + 1, total, mutant.id);
 
+        // Determine the file path to restore later.
+        let file_path = mutant.file_path.as_deref().unwrap_or("");
+
+        // Ensure the file is at HEAD before applying the mutant diff.
+        // A previous mutant may have been left applied if restore silently failed.
+        if !file_path.is_empty() {
+            if let Err(e) = restore_file(file_path).await {
+                eprintln!("  Warning: pre-restore failed for {}: {}", file_path, e);
+            }
+        }
+
         // Update status to 'running' and record the command.
         db.update_mutant_status(mutant.id, "running", command)?;
 
@@ -88,9 +99,6 @@ async fn run_db_analysis(
             db.update_mutant_status(mutant.id, "error", command)?;
             continue;
         }
-
-        // Determine the file path to restore later.
-        let file_path = mutant.file_path.as_deref().unwrap_or("");
 
         // Run the test command.
         let killed = !run_command(command, timeout_secs).await?;
@@ -367,7 +375,13 @@ fn get_command_to_kill(target_file_path: &str, jobs: u32) -> Result<String> {
 
 async fn restore_file(target_file_path: &str) -> Result<()> {
     let restore_command = format!("git restore {}", target_file_path);
-    run_command(&restore_command, 30).await?;
+    let success = run_command(&restore_command, 30).await?;
+    if !success {
+        return Err(MutationError::Git(format!(
+            "git restore failed for {}",
+            target_file_path
+        )));
+    }
     Ok(())
 }
 
