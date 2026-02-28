@@ -99,6 +99,10 @@ enum Commands {
         /// Run ID to analyze from the SQLite database (requires --sqlite)
         #[arg(long)]
         run_id: Option<i64>,
+
+        /// Only analyze mutants for this file path (requires --run_id)
+        #[arg(long)]
+        file_path: Option<String>,
     },
 }
 
@@ -181,6 +185,7 @@ async fn main() -> Result<()> {
             survival_threshold,
             sqlite,
             run_id,
+            file_path,
         } => {
             if run_id.is_some() && sqlite.is_none() {
                 return Err(MutationError::InvalidInput(
@@ -188,7 +193,13 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, sqlite, run_id)
+            if file_path.is_some() && run_id.is_none() {
+                return Err(MutationError::InvalidInput(
+                    "--file_path requires --run_id".to_string(),
+                ));
+            }
+
+            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, sqlite, run_id, file_path)
                 .await?;
         }
     }
