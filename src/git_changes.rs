@@ -23,6 +23,11 @@ pub async fn run_git_command(args: &[&str]) -> Result<Vec<String>> {
     Ok(stdout.lines().map(|s| s.to_string()).collect())
 }
 
+pub async fn get_commit_hash() -> Result<String> {
+    let lines = run_git_command(&["rev-parse", "HEAD"]).await?;
+    Ok(lines.into_iter().next().unwrap_or_default())
+}
+
 pub async fn get_changed_files(pr_number: Option<u32>) -> Result<Vec<String>> {
     let mut used_remote = "upstream"; // Track which remote we successfully used
 

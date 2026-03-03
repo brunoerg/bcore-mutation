@@ -1,8 +1,10 @@
+use crate::db::Database;
 use crate::error::{MutationError, Result};
 use crate::report::generate_report;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 use walkdir::WalkDir;
@@ -13,7 +15,24 @@ pub async fn run_analysis(
     jobs: u32,
     timeout_secs: u64,
     survival_threshold: f64,
+    sqlite_path: Option<PathBuf>,
+    run_id: Option<i64>,
+    file_path: Option<String>,
 ) -> Result<()> {
+    // DB-based analysis mode: read mutants from DB and test them.
+    if let (Some(ref path), Some(rid)) = (sqlite_path.as_ref(), run_id) {
+        let command = command.ok_or_else(|| {
+            MutationError::InvalidInput(
+                "--command is required when using --sqlite with --run_id".to_string(),
+            )
+        })?;
+        let db = Database::open(path)?;
+        db.ensure_schema()?;
+        db.seed_projects()?;
+        return run_db_analysis(&db, rid, &command, timeout_secs, file_path.as_deref()).await;
+    }
+
+    // Folder-based analysis mode (existing behaviour).
     let folders = if let Some(folder_path) = folder {
         vec![folder_path]
     } else {
@@ -30,6 +49,122 @@ pub async fn run_analysis(
             survival_threshold,
         )
         .await?;
+    }
+
+    Ok(())
+}
+
+/// Test all pending mutants in `run_id` from the database, optionally filtered by `file_path`.
+async fn run_db_analysis(
+    db: &Database,
+    run_id: i64,
+    command: &str,
+    timeout_secs: u64,
+    file_path: Option<&str>,
+) -> Result<()> {
+    let mutants = db.get_mutants_for_run(run_id, file_path)?;
+    let total = mutants.len();
+
+    if let Some(fp) = file_path {
+        println!("* {} MUTANTS in run_id={} (file: {}) *", total, run_id, fp);
+    } else {
+        println!("* {} MUTANTS in run_id={} *", total, run_id);
+    }
+
+    if total == 0 {
+        return Err(MutationError::InvalidInput(format!(
+            "No mutants found for run_id={}",
+            run_id
+        )));
+    }
+
+    let mut num_killed: u64 = 0;
+    let mut num_survived: u64 = 0;
+
+    for (i, mutant) in mutants.iter().enumerate() {
+        println!("[{}/{}] Analyzing mutant id={}", i + 1, total, mutant.id);
+
+        // Determine the file path to restore later.
+        let file_path = mutant.file_path.as_deref().unwrap_or("");
+
+        // Ensure the file is at HEAD before applying the mutant diff.
+        // A previous mutant may have been left applied if restore silently failed.
+        if !file_path.is_empty() {
+            if let Err(e) = restore_file(file_path).await {
+                eprintln!("  Warning: pre-restore failed for {}: {}", file_path, e);
+            }
+        }
+
+        // Update status to 'running' and record the command.
+        db.update_mutant_status(mutant.id, "running", command)?;
+
+        // Write the patch to a temp file and apply it with `git apply`.
+        let apply_result = apply_diff(&mutant.diff).await;
+        if let Err(ref e) = apply_result {
+            eprintln!("  Failed to apply diff for mutant {}: {}", mutant.id, e);
+            db.update_mutant_status(mutant.id, "error", command)?;
+            continue;
+        }
+
+        // Run the test command.
+        let killed = !run_command(command, timeout_secs).await?;
+
+        let new_status = if killed {
+            println!("  KILLED ✅");
+            num_killed += 1;
+            "killed"
+        } else {
+            println!("  NOT KILLED ❌");
+            num_survived += 1;
+            "survived"
+        };
+
+        db.update_mutant_status(mutant.id, new_status, command)?;
+
+        // Restore the modified file.
+        if !file_path.is_empty() {
+            restore_file(file_path).await?;
+        }
+    }
+
+    let score = if total > 0 {
+        num_killed as f64 / total as f64
+    } else {
+        0.0
+    };
+    println!(
+        "\nMUTATION SCORE: {:.2}% ({} killed / {} total)",
+        score * 100.0,
+        num_killed,
+        total
+    );
+    println!("Survived: {}", num_survived);
+
+    Ok(())
+}
+
+/// Apply a unified diff patch using `git apply`.
+async fn apply_diff(diff: &str) -> Result<()> {
+    use std::io::Write;
+
+    let mut tmp = NamedTempFile::new()?;
+    tmp.write_all(diff.as_bytes())?;
+    tmp.flush()?;
+
+    let tmp_path = tmp.path().to_path_buf();
+    // Keep `tmp` alive until after the command runs.
+    let output = TokioCommand::new("git")
+        .args(["apply", "--whitespace=nowarn", tmp_path.to_str().unwrap()])
+        .output()
+        .await
+        .map_err(|e| MutationError::Git(format!("git apply failed: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(MutationError::Git(format!(
+            "git apply error: {}",
+            stderr.trim()
+        )));
     }
 
     Ok(())
@@ -246,7 +381,13 @@ fn get_command_to_kill(target_file_path: &str, jobs: u32) -> Result<String> {
 
 async fn restore_file(target_file_path: &str) -> Result<()> {
     let restore_command = format!("git restore {}", target_file_path);
-    run_command(&restore_command, 30).await?;
+    let success = run_command(&restore_command, 30).await?;
+    if !success {
+        return Err(MutationError::Git(format!(
+            "git restore failed for {}",
+            target_file_path
+        )));
+    }
     Ok(())
 }
 

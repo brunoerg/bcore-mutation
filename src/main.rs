@@ -5,6 +5,7 @@ use std::path::PathBuf;
 mod analyze;
 mod ast_analysis;
 mod coverage;
+mod db;
 mod error;
 mod git_changes;
 mod mutation;
@@ -64,6 +65,10 @@ enum Commands {
         /// Add custom expert rule for arid node detection
         #[arg(long, value_name = "PATTERN")]
         add_expert_rule: Option<String>,
+
+        /// Persist results to a SQLite database (default path: mutation.db)
+        #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "mutation.db")]
+        sqlite: Option<PathBuf>,
     },
     /// Analyze mutants
     Analyze {
@@ -86,6 +91,18 @@ enum Commands {
         /// Maximum acceptable survival rate (0.3 = 30%)
         #[arg(long, default_value = "0.75")]
         survival_threshold: f64,
+
+        /// SQLite database path to read mutants from (requires --run_id)
+        #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "mutation.db")]
+        sqlite: Option<PathBuf>,
+
+        /// Run ID to analyze from the SQLite database (requires --sqlite)
+        #[arg(long)]
+        run_id: Option<i64>,
+
+        /// Only analyze mutants for this file path (requires --run_id)
+        #[arg(long)]
+        file_path: Option<String>,
     },
 }
 
@@ -105,6 +122,7 @@ async fn main() -> Result<()> {
             only_security_mutations,
             disable_ast_filtering,
             add_expert_rule,
+            sqlite,
         } => {
             let skip_lines_map = if let Some(path) = skip_lines {
                 read_skip_lines(&path)?
@@ -155,6 +173,7 @@ async fn main() -> Result<()> {
                 skip_lines_map,
                 !disable_ast_filtering,
                 add_expert_rule,
+                sqlite,
             )
             .await?;
         }
@@ -164,8 +183,24 @@ async fn main() -> Result<()> {
             jobs,
             command,
             survival_threshold,
+            sqlite,
+            run_id,
+            file_path,
         } => {
-            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold).await?;
+            if run_id.is_some() && sqlite.is_none() {
+                return Err(MutationError::InvalidInput(
+                    "--run_id requires --sqlite <path>".to_string(),
+                ));
+            }
+
+            if file_path.is_some() && run_id.is_none() {
+                return Err(MutationError::InvalidInput(
+                    "--file_path requires --run_id".to_string(),
+                ));
+            }
+
+            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, sqlite, run_id, file_path)
+                .await?;
         }
     }
 

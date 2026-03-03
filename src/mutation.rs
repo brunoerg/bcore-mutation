@@ -1,6 +1,7 @@
 use crate::ast_analysis::{filter_mutatable_lines, AridNodeDetector};
+use crate::db::{compute_patch_hash, generate_diff, Database, MutantData};
 use crate::error::{MutationError, Result};
-use crate::git_changes::{get_changed_files, get_lines_touched};
+use crate::git_changes::{get_changed_files, get_commit_hash, get_lines_touched};
 use crate::operators::{
     get_do_not_mutate_patterns, get_do_not_mutate_py_patterns, get_do_not_mutate_unit_patterns,
     get_regex_operators, get_security_operators, get_skip_if_contain_patterns, get_test_operators,
@@ -18,6 +19,15 @@ pub struct FileToMutate {
     pub is_unit_test: bool,
 }
 
+/// Chunk size for DB batch inserts.
+const DB_BATCH_SIZE: usize = 100;
+
+/// Serialize execution config options into a JSON string for the runs table.
+/// Returns `None` when there is nothing worth recording.
+fn build_config_json(range_lines: Option<(usize, usize)>) -> Option<String> {
+    range_lines.map(|(start, end)| format!("{{\"range\":[{},{}]}}", start, end))
+}
+
 pub async fn run_mutation(
     pr_number: Option<u32>,
     file: Option<PathBuf>,
@@ -29,12 +39,36 @@ pub async fn run_mutation(
     skip_lines: HashMap<String, Vec<usize>>,
     enable_ast_filtering: bool,
     custom_expert_rule: Option<String>,
+    sqlite_path: Option<PathBuf>,
 ) -> Result<()> {
+    // Set up database if requested.
+    let mut db_and_run: Option<(Database, i64)> = None;
+    if let Some(ref path) = sqlite_path {
+        let db = Database::open(path)?;
+        db.ensure_schema()?;
+        db.seed_projects()?;
+        let project_id = db.get_bitcoin_core_project_id()?;
+        let commit_hash = get_commit_hash().await.unwrap_or_else(|_| "unknown".to_string());
+        let tool_version = env!("CARGO_PKG_VERSION");
+        let config_json = build_config_json(range_lines);
+        let run_id = db.create_run(
+            project_id,
+            &commit_hash,
+            tool_version,
+            pr_number,
+            config_json.as_deref(),
+        )?;
+        println!("SQLite: created run id={} in {}", run_id, path.display());
+        db_and_run = Some((db, run_id));
+    }
+
+    let mut all_mutants: Vec<MutantData> = Vec::new();
+
     if let Some(file_path) = file {
         let file_str = file_path.to_string_lossy().to_string();
         let is_unit_test = file_str.contains("test") && !file_str.contains(".py");
 
-        mutate_file(
+        let mutants = mutate_file(
             &file_str,
             None,
             None,
@@ -48,56 +82,71 @@ pub async fn run_mutation(
             custom_expert_rule,
         )
         .await?;
-        return Ok(());
-    }
+        all_mutants.extend(mutants);
+    } else {
+        let files_changed = get_changed_files(pr_number).await?;
+        let mut files_to_mutate = Vec::new();
 
-    let files_changed = get_changed_files(pr_number).await?;
-    let mut files_to_mutate = Vec::new();
+        for file_changed in files_changed {
+            // Skip certain file types
+            if file_changed.contains("doc")
+                || file_changed.contains("fuzz")
+                || file_changed.contains("bench")
+                || file_changed.contains("util")
+                || file_changed.contains("sanitizer_supressions")
+                || file_changed.contains("test_framework.py")
+                || file_changed.ends_with(".txt")
+            {
+                continue;
+            }
 
-    for file_changed in files_changed {
-        // Skip certain file types
-        if file_changed.contains("doc")
-            || file_changed.contains("fuzz")
-            || file_changed.contains("bench")
-            || file_changed.contains("util")
-            || file_changed.contains("sanitizer_supressions")
-            || file_changed.contains("test_framework.py")
-            || file_changed.ends_with(".txt")
-        {
-            continue;
+            let lines_touched = get_lines_touched(&file_changed).await?;
+            let is_unit_test = file_changed.contains("test")
+                && !file_changed.contains(".py")
+                && !file_changed.contains("util");
+
+            if test_only && !(is_unit_test || file_changed.contains(".py")) {
+                continue;
+            }
+
+            files_to_mutate.push(FileToMutate {
+                file_path: file_changed,
+                lines_touched,
+                is_unit_test,
+            });
         }
 
-        let lines_touched = get_lines_touched(&file_changed).await?;
-        let is_unit_test = file_changed.contains("test")
-            && !file_changed.contains(".py")
-            && !file_changed.contains("util");
-
-        if test_only && !(is_unit_test || file_changed.contains(".py")) {
-            continue;
+        for file_info in files_to_mutate {
+            let mutants = mutate_file(
+                &file_info.file_path,
+                Some(file_info.lines_touched),
+                pr_number,
+                one_mutant,
+                only_security_mutations,
+                range_lines,
+                &coverage,
+                file_info.is_unit_test,
+                &skip_lines,
+                enable_ast_filtering,
+                custom_expert_rule.clone(),
+            )
+            .await?;
+            all_mutants.extend(mutants);
         }
-
-        files_to_mutate.push(FileToMutate {
-            file_path: file_changed,
-            lines_touched,
-            is_unit_test,
-        });
     }
 
-    for file_info in files_to_mutate {
-        mutate_file(
-            &file_info.file_path,
-            Some(file_info.lines_touched),
-            pr_number,
-            one_mutant,
-            only_security_mutations,
-            range_lines,
-            &coverage,
-            file_info.is_unit_test,
-            &skip_lines,
-            enable_ast_filtering,
-            custom_expert_rule.clone(),
-        )
-        .await?;
+    // Persist mutants to the database in chunks.
+    if let Some((ref mut db, run_id)) = db_and_run {
+        let total = all_mutants.len();
+        let mut inserted = 0usize;
+        for chunk in all_mutants.chunks(DB_BATCH_SIZE) {
+            db.insert_mutant_batch(run_id, chunk)?;
+            inserted += chunk.len();
+        }
+        println!(
+            "SQLite: inserted {}/{} mutants for run_id={}",
+            inserted, total, run_id
+        );
     }
 
     Ok(())
@@ -115,7 +164,7 @@ pub async fn mutate_file(
     skip_lines: &HashMap<String, Vec<usize>>,
     enable_ast_filtering: bool,
     custom_expert_rule: Option<String>,
-) -> Result<()> {
+) -> Result<Vec<MutantData>> {
     println!("\n\nGenerating mutants for {}...", file_to_mutate);
 
     let source_code = fs::read_to_string(file_to_mutate)?;
@@ -210,6 +259,7 @@ pub async fn mutate_file(
     }
 
     let mut mutant_count = 0;
+    let mut collected: Vec<MutantData> = Vec::new();
 
     if one_mutant {
         println!("One mutant mode enabled");
@@ -277,6 +327,27 @@ pub async fn mutate_file(
                     range_lines,
                 )?;
 
+                // Collect mutant metadata for DB persistence.
+                let diff = match generate_diff(file_to_mutate, &mutated_content).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!(
+                            "  Warning: could not generate diff for mutant at line {}: {}",
+                            line_num, e
+                        );
+                        continue;
+                    }
+                };
+                let patch_hash = compute_patch_hash(&diff);
+                let operator_label =
+                    format!("{} ==> {}", operator.pattern.as_str(), operator.replacement);
+                collected.push(MutantData {
+                    diff,
+                    patch_hash,
+                    file_path: file_to_mutate.to_string(),
+                    operator: operator_label,
+                });
+
                 if one_mutant {
                     break; // Break only from operator loop, continue to next line
                 }
@@ -303,7 +374,7 @@ pub async fn mutate_file(
     }
 
     println!("Generated {} mutants...", mutant_count);
-    Ok(())
+    Ok(collected)
 }
 
 fn should_skip_line(line: &str, file_path: &str, is_unit_test: bool) -> Result<bool> {
