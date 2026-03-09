@@ -317,7 +317,10 @@ pub async fn mutate_file(
                 // Create mutated file content
                 let mut mutated_lines = lines.clone();
                 mutated_lines[line_idx] = &line_mutated;
-                let mutated_content = mutated_lines.join("\n");
+                let mut mutated_content = mutated_lines.join("\n");
+                if source_code.ends_with('\n') {
+                    mutated_content.push('\n');
+                }
 
                 mutant_count = write_mutation(
                     file_to_mutate,
