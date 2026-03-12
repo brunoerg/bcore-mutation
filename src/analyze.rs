@@ -18,6 +18,7 @@ pub async fn run_analysis(
     sqlite_path: Option<PathBuf>,
     run_id: Option<i64>,
     file_path: Option<String>,
+    survivors_only: bool,
 ) -> Result<()> {
     // DB-based analysis mode: read mutants from DB and test them.
     if let (Some(ref path), Some(rid)) = (sqlite_path.as_ref(), run_id) {
@@ -29,7 +30,15 @@ pub async fn run_analysis(
         let db = Database::open(path)?;
         db.ensure_schema()?;
         db.seed_projects()?;
-        return run_db_analysis(&db, rid, &command, timeout_secs, file_path.as_deref()).await;
+        return run_db_analysis(
+            &db,
+            rid,
+            &command,
+            timeout_secs,
+            file_path.as_deref(),
+            survivors_only,
+        )
+        .await;
     }
 
     // Folder-based analysis mode (existing behaviour).
@@ -55,20 +64,26 @@ pub async fn run_analysis(
 }
 
 /// Test all pending mutants in `run_id` from the database, optionally filtered by `file_path`.
+/// When `survivors_only` is true, only previously survived mutants are analyzed.
 async fn run_db_analysis(
     db: &Database,
     run_id: i64,
     command: &str,
     timeout_secs: u64,
     file_path: Option<&str>,
+    survivors_only: bool,
 ) -> Result<()> {
-    let mutants = db.get_mutants_for_run(run_id, file_path)?;
+    let mutants = db.get_mutants_for_run(run_id, file_path, survivors_only)?;
     let total = mutants.len();
 
-    if let Some(fp) = file_path {
-        println!("* {} MUTANTS in run_id={} (file: {}) *", total, run_id, fp);
-    } else {
-        println!("* {} MUTANTS in run_id={} *", total, run_id);
+    match (file_path, survivors_only) {
+        (Some(fp), true) => println!(
+            "* {} SURVIVING MUTANTS in run_id={} (file: {}) *",
+            total, run_id, fp
+        ),
+        (Some(fp), false) => println!("* {} MUTANTS in run_id={} (file: {}) *", total, run_id, fp),
+        (None, true) => println!("* {} SURVIVING MUTANTS in run_id={} *", total, run_id),
+        (None, false) => println!("* {} MUTANTS in run_id={} *", total, run_id),
     }
 
     if total == 0 {
