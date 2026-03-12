@@ -155,37 +155,56 @@ impl Database {
     }
 
     /// Return mutants belonging to `run_id`, optionally filtered by `file_path`.
+    /// When `survivors_only` is true, only mutants with status `'survived'` are returned.
     pub fn get_mutants_for_run(
         &self,
         run_id: i64,
         file_path: Option<&str>,
+        survivors_only: bool,
     ) -> Result<Vec<MutantRow>> {
-        let sql = if file_path.is_some() {
-            "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1 AND file_path = ?2"
-        } else {
-            "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1"
+        let map_row = |row: &rusqlite::Row<'_>| {
+            Ok(MutantRow {
+                id: row.get(0)?,
+                diff: row.get(1)?,
+                file_path: row.get(2)?,
+            })
         };
 
-        let mut stmt = self.conn.prepare(sql)?;
-
-        let rows: Vec<MutantRow> = if let Some(fp) = file_path {
-            stmt.query_map(params![run_id, fp], |row| {
-                Ok(MutantRow {
-                    id: row.get(0)?,
-                    diff: row.get(1)?,
-                    file_path: row.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?
-        } else {
-            stmt.query_map(params![run_id], |row| {
-                Ok(MutantRow {
-                    id: row.get(0)?,
-                    diff: row.get(1)?,
-                    file_path: row.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?
+        let rows: Vec<MutantRow> = match (file_path, survivors_only) {
+            (Some(fp), false) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1 AND file_path = ?2",
+                )?;
+                let rows = stmt.query_map(params![run_id, fp], map_row)?
+                    .collect::<rusqlite::Result<_>>()?;
+                rows
+            }
+            (Some(fp), true) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, diff, file_path FROM mutants \
+                     WHERE run_id = ?1 AND file_path = ?2 AND status = 'survived'",
+                )?;
+                let rows = stmt.query_map(params![run_id, fp], map_row)?
+                    .collect::<rusqlite::Result<_>>()?;
+                rows
+            }
+            (None, false) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1",
+                )?;
+                let rows = stmt.query_map(params![run_id], map_row)?
+                    .collect::<rusqlite::Result<_>>()?;
+                rows
+            }
+            (None, true) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, diff, file_path FROM mutants \
+                     WHERE run_id = ?1 AND status = 'survived'",
+                )?;
+                let rows = stmt.query_map(params![run_id], map_row)?
+                    .collect::<rusqlite::Result<_>>()?;
+                rows
+            }
         };
 
         Ok(rows)
