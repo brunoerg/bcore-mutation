@@ -103,6 +103,10 @@ enum Commands {
         /// Only analyze mutants for this file path (requires --run_id)
         #[arg(long)]
         file_path: Option<String>,
+
+        /// Only analyze mutants that survived a previous run (requires --run_id)
+        #[arg(long)]
+        survivors_only: bool,
     },
 }
 
@@ -186,6 +190,7 @@ async fn main() -> Result<()> {
             sqlite,
             run_id,
             file_path,
+            survivors_only,
         } => {
             if run_id.is_some() && sqlite.is_none() {
                 return Err(MutationError::InvalidInput(
@@ -199,7 +204,7 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, sqlite, run_id, file_path)
+            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, sqlite, run_id, file_path, survivors_only)
                 .await?;
         }
     }
