@@ -90,6 +90,7 @@ pub async fn run_mutation(
         for file_changed in files_changed {
             // Skip certain file types
             if file_changed.contains("doc")
+                || file_changed.contains("contrib")
                 || file_changed.contains("fuzz")
                 || file_changed.contains("bench")
                 || file_changed.contains("util")
