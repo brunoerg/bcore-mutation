@@ -58,6 +58,7 @@ pub fn get_regex_operators() -> Result<Vec<MutationOperator>, regex::Error> {
         (r"\b(if|else\s+if|while)\s*\(([^()]*)\)", r"$1 (1==1)"),
         (r"\b(if|else\s+if|while)\s*\(([^()]*)\)", r"$1 (1==0)"),
         (r".*\berase\(.+", ""),
+        (r"^\s*[a-zA-Z_]\w*(?:::[a-zA-Z_]\w*)*(?:(?:->|\.)[a-zA-Z_]\w*)*\s*\([^;]*\)\s*;$", ""),
         (r"^.*if\s*\(.*\)\s*continue;.*$", ""),
         (r"^.*if\s*\(.*\)\s*return;.*$", ""),
         (r"^.*if\s*\(.*\)\s*return.*;.*$", ""),
@@ -251,4 +252,57 @@ pub fn should_mutate_test_line(line: &str) -> bool {
     let function_call_pattern =
         Regex::new(r"^\s*(?:\w+(?:\.|->|::))*(\w+)\s*\([^)]*\)\s*;?\s*$").unwrap();
     function_call_pattern.is_match(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn generic_call_deletion_op() -> MutationOperator {
+        MutationOperator::new(
+            r"^\s*[a-zA-Z_]\w*(?:::[a-zA-Z_]\w*)*(?:(?:->|\.)[a-zA-Z_]\w*)*\s*\([^;]*\)\s*;$",
+            "",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_generic_call_deletion_matches_free_function() {
+        let op = generic_call_deletion_op();
+        assert!(op.pattern.is_match("    Foo(arg1, arg2);"));
+        assert!(op.pattern.is_match("DoSomething();"));
+    }
+
+    #[test]
+    fn test_generic_call_deletion_matches_dot_member_call() {
+        let op = generic_call_deletion_op();
+        assert!(op.pattern.is_match("    obj.Method(arg);"));
+        assert!(op.pattern.is_match("obj.Method();"));
+    }
+
+    #[test]
+    fn test_generic_call_deletion_matches_arrow_member_call() {
+        let op = generic_call_deletion_op();
+        assert!(op.pattern.is_match("    ptr->Method(arg);"));
+        assert!(op.pattern.is_match("ptr->Method();"));
+    }
+
+    #[test]
+    fn test_generic_call_deletion_matches_namespaced_call() {
+        let op = generic_call_deletion_op();
+        assert!(op.pattern.is_match("    Namespace::Function(arg);"));
+        assert!(op.pattern.is_match("ns::Foo();"));
+    }
+
+    #[test]
+    fn test_generic_call_deletion_ignores_control_flow_and_keywords() {
+        let op = generic_call_deletion_op();
+        assert!(!op.pattern.is_match("    if (condition) {"));
+        assert!(!op.pattern.is_match("    while (x > 0) {"));
+        assert!(!op.pattern.is_match("    for (int i = 0; i < n; i++) {"));
+        assert!(!op.pattern.is_match("    switch (value) {"));
+        assert!(!op.pattern.is_match("    return Foo();"));
+        assert!(!op.pattern.is_match("    delete ptr;"));
+        assert!(!op.pattern.is_match("    throw std::runtime_error(\"err\");"));
+    }
 }
