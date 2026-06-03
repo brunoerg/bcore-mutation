@@ -279,11 +279,7 @@ impl AridNodeDetector {
 
     /// Context-aware version that checks if a line should be mutated
     /// Takes all lines and the current line index to understand control structures
-    pub fn should_mutate_line_with_context(
-        &mut self,
-        lines: &[String],
-        line_index: usize,
-    ) -> bool {
+    pub fn should_mutate_line_with_context(&mut self, lines: &[String], line_index: usize) -> bool {
         let line = &lines[line_index];
         let trimmed = line.trim();
 
@@ -863,7 +859,10 @@ mod tests {
             0,
             30,
         );
-        assert!(expert.is_arid_simple_node(&log_debug_node), "LogDebug should be recognized as arid");
+        assert!(
+            expert.is_arid_simple_node(&log_debug_node),
+            "LogDebug should be recognized as arid"
+        );
     }
 
     #[test]
@@ -931,8 +930,15 @@ mod tests {
         // First, let's test that LogDebug itself is recognized as arid
         let log_line = lines[1].trim();
         let log_node = detector.parse_line_to_simple_ast(log_line, 2);
-        assert_eq!(log_node.node_type, AstNodeType::FunctionCall, "LogDebug line should be classified as FunctionCall");
-        assert!(detector.is_arid(&log_node), "LogDebug should be recognized as arid");
+        assert_eq!(
+            log_node.node_type,
+            AstNodeType::FunctionCall,
+            "LogDebug line should be classified as FunctionCall"
+        );
+        assert!(
+            detector.is_arid(&log_node),
+            "LogDebug should be recognized as arid"
+        );
 
         let mutatable_lines = filter_mutatable_lines(&lines, &mut detector);
 

@@ -4,15 +4,18 @@ use std::path::PathBuf;
 
 mod analyze;
 mod ast_analysis;
+mod commands;
 mod coverage;
 mod db;
 mod error;
 mod git_changes;
 mod mutation;
 mod operators;
+mod project;
 mod report;
 
 use error::{MutationError, Result};
+use project::Project;
 
 #[derive(Parser)]
 #[command(name = "bcore-mutation")]
@@ -24,9 +27,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create mutants for a specific Bitcoin Core PR or file
+    /// Create mutants for a specific PR or file
     Mutate {
-        /// Bitcoin Core's PR number (0 = current branch)
+        /// Project to mutate (bitcoin-core or secp256k1)
+        #[arg(long, value_enum, default_value_t = Project::default())]
+        project: Project,
+
+        /// PR number (0 = current branch)
         #[arg(short, long, default_value = "0")]
         pr: u32,
 
@@ -72,6 +79,10 @@ enum Commands {
     },
     /// Analyze mutants
     Analyze {
+        /// Project being analyzed (bitcoin-core or secp256k1)
+        #[arg(long, value_enum, default_value_t = Project::default())]
+        project: Project,
+
         /// Folder with the mutants
         #[arg(short, long)]
         folder: Option<PathBuf>,
@@ -116,6 +127,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Mutate {
+            project,
             pr,
             test_only,
             cov,
@@ -167,6 +179,7 @@ async fn main() -> Result<()> {
             }
 
             mutation::run_mutation(
+                project,
                 if pr == 0 { None } else { Some(pr) },
                 file,
                 one_mutant,
@@ -182,6 +195,7 @@ async fn main() -> Result<()> {
             .await?;
         }
         Commands::Analyze {
+            project,
             folder,
             timeout,
             jobs,
@@ -204,8 +218,19 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, sqlite, run_id, file_path, survivors_only)
-                .await?;
+            analyze::run_analysis(
+                project,
+                folder,
+                command,
+                jobs,
+                timeout,
+                survival_threshold,
+                sqlite,
+                run_id,
+                file_path,
+                survivors_only,
+            )
+            .await?;
         }
     }
 

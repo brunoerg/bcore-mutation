@@ -50,9 +50,10 @@ Generates mutants for the target code and optionally persists them to a SQLite d
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
+| `--project NAME` | | `bitcoin-core` | Project to mutate. Accepts `bitcoin-core` or `secp256k1`. When `--pr` is used, the PR is fetched from this project's repository. |
 | `--sqlite [PATH]` | | `mutation.db` | Persist mutants to a SQLite database. Accepts an optional custom path. |
 | `--file PATH` | `-f` | | File to mutate. Mutually exclusive with `--pr`. |
-| `--pr NUMBER` | `-p` | `0` (current branch) | Bitcoin Core PR number to mutate. Mutually exclusive with `--file`. |
+| `--pr NUMBER` | `-p` | `0` (current branch) | PR number to mutate (fetched from the `--project` repository). Mutually exclusive with `--file`. |
 | `--range START END` | `-r` | | Restrict mutation to a line range within the target file. Cannot be combined with `--cov`. |
 | `--cov PATH` | `-c` | | Path to a coverage file (`*.info` generated with `cmake -P build/Coverage.cmake`). Only lines covered by tests will be mutated. Cannot be combined with `--range`. |
 | `--skip-lines PATH` | | | Path to a JSON file listing lines to skip per file (see format below). |
@@ -72,6 +73,11 @@ bcore-mutation mutate --sqlite -f src/wallet/wallet.cpp
 **Mutate all files changed in a PR:**
 ```bash
 bcore-mutation mutate --sqlite -p 12345
+```
+
+**Mutate a secp256k1 PR (fetched from `bitcoin-core/secp256k1`):**
+```bash
+bcore-mutation mutate --sqlite --project secp256k1 -p 1234
 ```
 
 **Restrict to a line range:**
@@ -127,6 +133,7 @@ When `--sqlite` is used, the `mutate` command prints a `run_id` that you pass to
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
+| `--project NAME` | | `bitcoin-core` | Project being analyzed. Accepts `bitcoin-core` or `secp256k1`. |
 | `--sqlite [PATH]` | | `mutation.db` | SQLite database to read mutants from. Requires `--run-id`. Accepts an optional custom path. |
 | `--run-id ID` | | | Run ID returned by the `mutate` command. Requires `--sqlite`. |
 | `--command CMD` | `-c` | | Shell command used to test each mutant (e.g. a build + test invocation). Required when using `--run-id`. |
