@@ -11,6 +11,61 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 use walkdir::WalkDir;
 
+/// Killed/total counts produced by an analysis pass. Used to compute the
+/// mutation score and apply the optional `--min-score` CI gate.
+#[derive(Default, Clone, Copy)]
+pub struct ScoreSummary {
+    pub killed: u64,
+    pub total: u64,
+}
+
+impl ScoreSummary {
+    /// Mutation score as a fraction in `[0.0, 1.0]` (killed / total).
+    /// Returns `0.0` when no mutants were analyzed.
+    pub fn score(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.killed as f64 / self.total as f64
+        }
+    }
+
+    /// Accumulate another pass's counts (used to aggregate across folders).
+    fn add(&mut self, other: ScoreSummary) {
+        self.killed += other.killed;
+        self.total += other.total;
+    }
+}
+
+/// Fail (return an error) when `min_score` is set and the achieved mutation
+/// score is below it. This is the CI gate: an `Err` here propagates out of
+/// `main` and exits the process with a non-zero status.
+fn enforce_min_score(summary: ScoreSummary, min_score: Option<f64>) -> Result<()> {
+    let Some(min) = min_score else {
+        return Ok(());
+    };
+
+    let score = summary.score();
+    println!(
+        "\nOverall mutation score: {:.2}% ({}/{} killed); required minimum: {:.2}%",
+        score * 100.0,
+        summary.killed,
+        summary.total,
+        min * 100.0
+    );
+
+    if score < min {
+        return Err(MutationError::ScoreBelowThreshold(format!(
+            "mutation score {:.2}% is below the required minimum of {:.2}%",
+            score * 100.0,
+            min * 100.0
+        )));
+    }
+
+    println!("Mutation score meets the required minimum ✅");
+    Ok(())
+}
+
 pub async fn run_analysis(
     project: Project,
     folder: Option<PathBuf>,
@@ -18,6 +73,7 @@ pub async fn run_analysis(
     jobs: u32,
     timeout_secs: u64,
     survival_threshold: f64,
+    min_score: Option<f64>,
     sqlite_path: Option<PathBuf>,
     run_id: Option<i64>,
     file_path: Option<String>,
@@ -35,7 +91,7 @@ pub async fn run_analysis(
         let db = Database::open(path)?;
         db.ensure_schema()?;
         db.seed_projects()?;
-        return run_db_analysis(
+        let summary = run_db_analysis(
             &db,
             rid,
             &command,
@@ -43,7 +99,8 @@ pub async fn run_analysis(
             file_path.as_deref(),
             survivors_only,
         )
-        .await;
+        .await?;
+        return enforce_min_score(summary, min_score);
     }
 
     // Folder-based analysis mode (existing behaviour).
@@ -56,8 +113,16 @@ pub async fn run_analysis(
 
     let project_commands = commands::for_project(project);
 
+    // When we derive the test command ourselves (no --command), do the one-time
+    // clean build up front rather than once per folder. Each mutant still
+    // triggers an incremental rebuild inside its test command.
+    if command.is_none() && !folders.is_empty() {
+        run_build_command(project_commands.as_ref()).await?;
+    }
+
+    let mut overall = ScoreSummary::default();
     for folder_path in folders {
-        analyze_folder(
+        let summary = analyze_folder(
             &folder_path,
             command.clone(),
             jobs,
@@ -66,9 +131,10 @@ pub async fn run_analysis(
             project_commands.as_ref(),
         )
         .await?;
+        overall.add(summary);
     }
 
-    Ok(())
+    enforce_min_score(overall, min_score)
 }
 
 /// Test all pending mutants in `run_id` from the database, optionally filtered by `file_path`.
@@ -80,7 +146,7 @@ async fn run_db_analysis(
     timeout_secs: u64,
     file_path: Option<&str>,
     survivors_only: bool,
-) -> Result<()> {
+) -> Result<ScoreSummary> {
     let mutants = db.get_mutants_for_run(run_id, file_path, survivors_only)?;
     let total = mutants.len();
 
@@ -163,7 +229,10 @@ async fn run_db_analysis(
     );
     println!("Survived: {}", num_survived);
 
-    Ok(())
+    Ok(ScoreSummary {
+        killed: num_killed,
+        total: total as u64,
+    })
 }
 
 /// Apply a unified diff patch using `git apply`.
@@ -217,7 +286,7 @@ pub async fn analyze_folder(
     timeout_secs: u64,
     survival_threshold: f64,
     project_commands: &dyn ProjectCommands,
-) -> Result<()> {
+) -> Result<ScoreSummary> {
     let mut num_killed: u64 = 0;
     let mut not_killed = Vec::new();
 
@@ -226,11 +295,12 @@ pub async fn analyze_folder(
     let target_file_path = fs::read_to_string(original_file_path)?;
     let target_file_path = target_file_path.trim();
 
-    // Setup command if not provided
+    // Derive the test command when one isn't provided. The clean build is done
+    // once by the caller (run_analysis); here we only build the per-file test
+    // command, whose incremental `cmake --build` picks up each mutant.
     let test_command = if let Some(cmd) = command {
         cmd
     } else {
-        run_build_command(project_commands).await?;
         project_commands.test_command(&target_file_path, jobs)?
     };
 
@@ -306,7 +376,10 @@ pub async fn analyze_folder(
     // Restore the original file
     restore_file(&target_file_path).await?;
 
-    Ok(())
+    Ok(ScoreSummary {
+        killed: num_killed,
+        total: total_mutants as u64,
+    })
 }
 
 async fn run_command(command: &str, timeout_secs: u64) -> Result<bool> {
@@ -386,6 +459,35 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_enforce_min_score() {
+        // No gate configured: always Ok regardless of score.
+        assert!(enforce_min_score(ScoreSummary { killed: 0, total: 10 }, None).is_ok());
+
+        // Above threshold passes.
+        assert!(enforce_min_score(ScoreSummary { killed: 9, total: 10 }, Some(0.8)).is_ok());
+
+        // Exactly at threshold passes (gate uses `<`, so >= passes).
+        assert!(enforce_min_score(ScoreSummary { killed: 8, total: 10 }, Some(0.8)).is_ok());
+
+        // Below threshold fails with the dedicated error variant.
+        let result = enforce_min_score(ScoreSummary { killed: 5, total: 10 }, Some(0.8));
+        assert!(matches!(
+            result,
+            Err(MutationError::ScoreBelowThreshold(_))
+        ));
+    }
+
+    #[test]
+    fn test_score_summary_aggregates() {
+        let mut overall = ScoreSummary::default();
+        overall.add(ScoreSummary { killed: 3, total: 4 });
+        overall.add(ScoreSummary { killed: 1, total: 6 });
+        assert_eq!(overall.killed, 4);
+        assert_eq!(overall.total, 10);
+        assert!((overall.score() - 0.4).abs() < f64::EPSILON);
+    }
 
     #[tokio::test]
     async fn test_run_command() {

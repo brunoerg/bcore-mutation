@@ -103,6 +103,11 @@ enum Commands {
         #[arg(long, default_value = "0.75")]
         survival_threshold: f64,
 
+        /// Fail (non-zero exit) if the final mutation score is below this value
+        /// (0.8 = 80%). Intended as a CI gate. When unset, the score is not enforced.
+        #[arg(long, value_name = "RATE")]
+        min_score: Option<f64>,
+
         /// SQLite database path to read mutants from (requires --run_id)
         #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "mutation.db")]
         sqlite: Option<PathBuf>,
@@ -201,6 +206,7 @@ async fn main() -> Result<()> {
             jobs,
             command,
             survival_threshold,
+            min_score,
             sqlite,
             run_id,
             file_path,
@@ -218,6 +224,14 @@ async fn main() -> Result<()> {
                 ));
             }
 
+            if let Some(min) = min_score {
+                if !(0.0..=1.0).contains(&min) {
+                    return Err(MutationError::InvalidInput(
+                        "--min-score must be between 0.0 and 1.0".to_string(),
+                    ));
+                }
+            }
+
             analyze::run_analysis(
                 project,
                 folder,
@@ -225,6 +239,7 @@ async fn main() -> Result<()> {
                 jobs,
                 timeout,
                 survival_threshold,
+                min_score,
                 sqlite,
                 run_id,
                 file_path,

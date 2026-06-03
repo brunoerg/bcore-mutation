@@ -142,6 +142,7 @@ When `--sqlite` is used, the `mutate` command prints a `run_id` that you pass to
 | `--timeout SECONDS` | `-t` | `300` | Timeout in seconds for each mutant's test run. |
 | `--jobs N` | `-j` | `0` | Number of parallel jobs passed to the compiler (e.g. `make -j N`). `0` uses the system default. |
 | `--survival-threshold RATE` | | `0.75` | Maximum acceptable mutant survival rate (e.g. `0.3` = 30%). The run exits with an error if the threshold is exceeded. |
+| `--min-score RATE` | | | CI gate: fail with a non-zero exit code if the final mutation score (killed / total) is below this value (e.g. `0.8` = 80%). Aggregated across all analyzed folders. When unset, the score is not enforced. |
 | `--surviving` | | | Only analyze mutants that survived a previous run. Requires `--run-id`. |
 
 ### Examples
@@ -164,6 +165,16 @@ bcore-mutation analyze --sqlite --run-id=1 --file-path="src/net_processing.cpp" 
 ```bash
 bcore-mutation analyze --sqlite --run-id=1 --surviving \
   -c "cmake --build build && ./build/test/functional/wallet_test.py"
+```
+
+**Fail CI when the mutation score drops below 80% (folder mode, no database):**
+```bash
+# 1. Generate mutants for the PR — writes muts-* folders to disk
+bcore-mutation mutate --project secp256k1 --pr 1234
+
+# 2. Analyze them and fail the job if the score is under 80%.
+#    With no --command, the built-in secp256k1 build/test commands are used.
+bcore-mutation analyze --project secp256k1 --min-score 0.8
 ```
 
 **Set a custom timeout and job count:**

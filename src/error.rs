@@ -17,6 +17,9 @@ pub enum MutationError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[error("Mutation score below threshold: {0}")]
+    ScoreBelowThreshold(String),
+
     #[error("Coverage parsing error: {0}")]
     Coverage(String),
 
