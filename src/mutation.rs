@@ -91,16 +91,9 @@ pub async fn run_mutation(
         let mut files_to_mutate = Vec::new();
 
         for file_changed in files_changed {
-            // Skip certain file types
-            if file_changed.contains("doc")
-                || file_changed.contains("contrib")
-                || file_changed.contains("fuzz")
-                || file_changed.contains("bench")
-                || file_changed.contains("util")
-                || file_changed.contains("sanitizer_supressions")
-                || file_changed.contains("test_framework.py")
-                || file_changed.ends_with(".txt")
-            {
+            // Skip non-source files (docs, tooling, benchmarks, ...).
+            // The exact set is project-specific; see `Project::should_skip_file`.
+            if project.should_skip_file(&file_changed) {
                 continue;
             }
 
