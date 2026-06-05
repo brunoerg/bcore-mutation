@@ -48,6 +48,11 @@ const SECP256K1_SKIP_SUBSTRINGS: &[&str] = &[
     "secp256k1_rfc6979_hmac_sha256_clear",
     // Conditional zeroing on failure.
     "secp256k1_memczero",
+    // Field normalization. These only canonicalize the internal limb
+    // representation without changing the represented value, so deleting a
+    // call almost always yields an equivalent (non-useful) mutant. Covers
+    // secp256k1_fe_normalize{,_weak,_var,_to_zero,_to_zero_var}.
+    "secp256k1_fe_normalize",
     // testrand /dev/urandom file I/O.
     "fopen(",
     "fread(",
@@ -161,6 +166,22 @@ mod tests {
         ));
         assert!(skipped_by_global_secp256k1_lists(
             "    memset(sig64, 0, 64);"
+        ));
+    }
+
+    #[test]
+    fn skips_field_normalization_calls() {
+        assert!(skipped_by_global_secp256k1_lists(
+            "    secp256k1_fe_normalize(&r->x);"
+        ));
+        assert!(skipped_by_global_secp256k1_lists(
+            "    secp256k1_fe_normalize_weak(&r->x);"
+        ));
+        assert!(skipped_by_global_secp256k1_lists(
+            "    secp256k1_fe_normalize_var(&r->x);"
+        ));
+        assert!(skipped_by_global_secp256k1_lists(
+            "    secp256k1_fe_normalize_to_zero_var(&t);"
         ));
     }
 
