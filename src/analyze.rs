@@ -1,5 +1,7 @@
+use crate::commands::{self, ProjectCommands};
 use crate::db::Database;
 use crate::error::{MutationError, Result};
+use crate::project::Project;
 use crate::report::generate_report;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,17 +11,76 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 use walkdir::WalkDir;
 
+/// Killed/total counts produced by an analysis pass. Used to compute the
+/// mutation score and apply the optional `--min-score` CI gate.
+#[derive(Default, Clone, Copy)]
+pub struct ScoreSummary {
+    pub killed: u64,
+    pub total: u64,
+}
+
+impl ScoreSummary {
+    /// Mutation score as a fraction in `[0.0, 1.0]` (killed / total).
+    /// Returns `0.0` when no mutants were analyzed.
+    pub fn score(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.killed as f64 / self.total as f64
+        }
+    }
+
+    /// Accumulate another pass's counts (used to aggregate across folders).
+    fn add(&mut self, other: ScoreSummary) {
+        self.killed += other.killed;
+        self.total += other.total;
+    }
+}
+
+/// Fail (return an error) when `min_score` is set and the achieved mutation
+/// score is below it. This is the CI gate: an `Err` here propagates out of
+/// `main` and exits the process with a non-zero status.
+fn enforce_min_score(summary: ScoreSummary, min_score: Option<f64>) -> Result<()> {
+    let Some(min) = min_score else {
+        return Ok(());
+    };
+
+    let score = summary.score();
+    println!(
+        "\nOverall mutation score: {:.2}% ({}/{} killed); required minimum: {:.2}%",
+        score * 100.0,
+        summary.killed,
+        summary.total,
+        min * 100.0
+    );
+
+    if score < min {
+        return Err(MutationError::ScoreBelowThreshold(format!(
+            "mutation score {:.2}% is below the required minimum of {:.2}%",
+            score * 100.0,
+            min * 100.0
+        )));
+    }
+
+    println!("Mutation score meets the required minimum ✅");
+    Ok(())
+}
+
 pub async fn run_analysis(
+    project: Project,
     folder: Option<PathBuf>,
     command: Option<String>,
     jobs: u32,
     timeout_secs: u64,
     survival_threshold: f64,
+    min_score: Option<f64>,
     sqlite_path: Option<PathBuf>,
     run_id: Option<i64>,
     file_path: Option<String>,
     survivors_only: bool,
 ) -> Result<()> {
+    println!("Analyzing mutants for project: {}", project.db_name());
+
     // DB-based analysis mode: read mutants from DB and test them.
     if let (Some(ref path), Some(rid)) = (sqlite_path.as_ref(), run_id) {
         let command = command.ok_or_else(|| {
@@ -30,7 +91,7 @@ pub async fn run_analysis(
         let db = Database::open(path)?;
         db.ensure_schema()?;
         db.seed_projects()?;
-        return run_db_analysis(
+        let summary = run_db_analysis(
             &db,
             rid,
             &command,
@@ -38,7 +99,8 @@ pub async fn run_analysis(
             file_path.as_deref(),
             survivors_only,
         )
-        .await;
+        .await?;
+        return enforce_min_score(summary, min_score);
     }
 
     // Folder-based analysis mode (existing behaviour).
@@ -49,18 +111,30 @@ pub async fn run_analysis(
         find_mutation_folders()?
     };
 
+    let project_commands = commands::for_project(project);
+
+    // When we derive the test command ourselves (no --command), do the one-time
+    // clean build up front rather than once per folder. Each mutant still
+    // triggers an incremental rebuild inside its test command.
+    if command.is_none() && !folders.is_empty() {
+        run_build_command(project_commands.as_ref()).await?;
+    }
+
+    let mut overall = ScoreSummary::default();
     for folder_path in folders {
-        analyze_folder(
+        let summary = analyze_folder(
             &folder_path,
             command.clone(),
             jobs,
             timeout_secs,
             survival_threshold,
+            project_commands.as_ref(),
         )
         .await?;
+        overall.add(summary);
     }
 
-    Ok(())
+    enforce_min_score(overall, min_score)
 }
 
 /// Test all pending mutants in `run_id` from the database, optionally filtered by `file_path`.
@@ -72,7 +146,7 @@ async fn run_db_analysis(
     timeout_secs: u64,
     file_path: Option<&str>,
     survivors_only: bool,
-) -> Result<()> {
+) -> Result<ScoreSummary> {
     let mutants = db.get_mutants_for_run(run_id, file_path, survivors_only)?;
     let total = mutants.len();
 
@@ -155,7 +229,10 @@ async fn run_db_analysis(
     );
     println!("Survived: {}", num_survived);
 
-    Ok(())
+    Ok(ScoreSummary {
+        killed: num_killed,
+        total: total as u64,
+    })
 }
 
 /// Apply a unified diff patch using `git apply`.
@@ -208,7 +285,8 @@ pub async fn analyze_folder(
     jobs: u32,
     timeout_secs: u64,
     survival_threshold: f64,
-) -> Result<()> {
+    project_commands: &dyn ProjectCommands,
+) -> Result<ScoreSummary> {
     let mut num_killed: u64 = 0;
     let mut not_killed = Vec::new();
 
@@ -217,12 +295,13 @@ pub async fn analyze_folder(
     let target_file_path = fs::read_to_string(original_file_path)?;
     let target_file_path = target_file_path.trim();
 
-    // Setup command if not provided
+    // Derive the test command when one isn't provided. The clean build is done
+    // once by the caller (run_analysis); here we only build the per-file test
+    // command, whose incremental `cmake --build` picks up each mutant.
     let test_command = if let Some(cmd) = command {
         cmd
     } else {
-        run_build_command().await?;
-        get_command_to_kill(&target_file_path, jobs)?
+        project_commands.test_command(&target_file_path, jobs)?
     };
 
     // Get list of mutant files
@@ -297,7 +376,10 @@ pub async fn analyze_folder(
     // Restore the original file
     restore_file(&target_file_path).await?;
 
-    Ok(())
+    Ok(ScoreSummary {
+        killed: num_killed,
+        total: total_mutants as u64,
+    })
 }
 
 async fn run_command(command: &str, timeout_secs: u64) -> Result<bool> {
@@ -349,49 +431,15 @@ async fn run_command(command: &str, timeout_secs: u64) -> Result<bool> {
     }
 }
 
-async fn run_build_command() -> Result<()> {
-    let build_command =
-        "rm -rf build && cmake -B build -DENABLE_IPC=OFF && cmake --build build -j $(nproc)";
+async fn run_build_command(project_commands: &dyn ProjectCommands) -> Result<()> {
+    let build_command = project_commands.build_command();
 
-    let success = run_command(build_command, 3600).await?; // 1 hour timeout for build
+    let success = run_command(&build_command, project_commands.build_timeout_secs()).await?;
     if !success {
         return Err(MutationError::Command("Build command failed".to_string()));
     }
 
     Ok(())
-}
-
-fn get_command_to_kill(target_file_path: &str, jobs: u32) -> Result<String> {
-    let mut build_command = "cmake --build build".to_string();
-    if jobs > 0 {
-        build_command.push_str(&format!(" -j{}", jobs));
-    }
-
-    let command = if target_file_path.contains("functional") {
-        format!("./build/{}", target_file_path)
-    } else if target_file_path.contains("test") {
-        let filename_with_extension = Path::new(target_file_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| MutationError::InvalidInput("Invalid file path".to_string()))?;
-
-        let test_to_run = filename_with_extension
-            .rsplit('.')
-            .nth(1)
-            .ok_or_else(|| MutationError::InvalidInput("Cannot extract test name".to_string()))?;
-
-        format!(
-            "{} && ./build/bin/test_bitcoin --run_test={}",
-            build_command, test_to_run
-        )
-    } else {
-        format!(
-            "{} && ctest --output-on-failure --stop-on-failure -C Release && CI_FAILFAST_TEST_LEAVE_DANGLING=1 ./build/test/functional/test_runner.py -F",
-            build_command
-        )
-    };
-
-    Ok(command)
 }
 
 async fn restore_file(target_file_path: &str) -> Result<()> {
@@ -413,23 +461,32 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_get_command_to_kill() {
-        // Test functional test
-        let cmd = get_command_to_kill("test/functional/test_example.py", 4).unwrap();
-        assert_eq!(cmd, "./build/test/functional/test_example.py");
+    fn test_enforce_min_score() {
+        // No gate configured: always Ok regardless of score.
+        assert!(enforce_min_score(ScoreSummary { killed: 0, total: 10 }, None).is_ok());
 
-        // Test unit test
-        let cmd = get_command_to_kill("src/test/test_example.cpp", 0).unwrap();
-        assert_eq!(
-            cmd,
-            "cmake --build build && ./build/bin/test_bitcoin --run_test=test_example"
-        );
+        // Above threshold passes.
+        assert!(enforce_min_score(ScoreSummary { killed: 9, total: 10 }, Some(0.8)).is_ok());
 
-        // Test general case
-        let cmd = get_command_to_kill("src/wallet/wallet.cpp", 2).unwrap();
-        assert!(cmd.contains("cmake --build build -j2"));
-        assert!(cmd.contains("ctest"));
-        assert!(cmd.contains("test_runner.py"));
+        // Exactly at threshold passes (gate uses `<`, so >= passes).
+        assert!(enforce_min_score(ScoreSummary { killed: 8, total: 10 }, Some(0.8)).is_ok());
+
+        // Below threshold fails with the dedicated error variant.
+        let result = enforce_min_score(ScoreSummary { killed: 5, total: 10 }, Some(0.8));
+        assert!(matches!(
+            result,
+            Err(MutationError::ScoreBelowThreshold(_))
+        ));
+    }
+
+    #[test]
+    fn test_score_summary_aggregates() {
+        let mut overall = ScoreSummary::default();
+        overall.add(ScoreSummary { killed: 3, total: 4 });
+        overall.add(ScoreSummary { killed: 1, total: 6 });
+        assert_eq!(overall.killed, 4);
+        assert_eq!(overall.total, 10);
+        assert!((overall.score() - 0.4).abs() < f64::EPSILON);
     }
 
     #[tokio::test]

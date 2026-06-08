@@ -4,15 +4,18 @@ use std::path::PathBuf;
 
 mod analyze;
 mod ast_analysis;
+mod commands;
 mod coverage;
 mod db;
 mod error;
 mod git_changes;
 mod mutation;
 mod operators;
+mod project;
 mod report;
 
 use error::{MutationError, Result};
+use project::Project;
 
 #[derive(Parser)]
 #[command(name = "bcore-mutation")]
@@ -24,9 +27,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create mutants for a specific Bitcoin Core PR or file
+    /// Create mutants for a specific PR or file
     Mutate {
-        /// Bitcoin Core's PR number (0 = current branch)
+        /// Project to mutate (bitcoin-core or secp256k1)
+        #[arg(long, value_enum, default_value_t = Project::default())]
+        project: Project,
+
+        /// PR number (0 = current branch)
         #[arg(short, long, default_value = "0")]
         pr: u32,
 
@@ -72,6 +79,10 @@ enum Commands {
     },
     /// Analyze mutants
     Analyze {
+        /// Project being analyzed (bitcoin-core or secp256k1)
+        #[arg(long, value_enum, default_value_t = Project::default())]
+        project: Project,
+
         /// Folder with the mutants
         #[arg(short, long)]
         folder: Option<PathBuf>,
@@ -91,6 +102,11 @@ enum Commands {
         /// Maximum acceptable survival rate (0.3 = 30%)
         #[arg(long, default_value = "0.75")]
         survival_threshold: f64,
+
+        /// Fail (non-zero exit) if the final mutation score is below this value
+        /// (0.8 = 80%). Intended as a CI gate. When unset, the score is not enforced.
+        #[arg(long, value_name = "RATE")]
+        min_score: Option<f64>,
 
         /// SQLite database path to read mutants from (requires --run_id)
         #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "mutation.db")]
@@ -116,6 +132,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Mutate {
+            project,
             pr,
             test_only,
             cov,
@@ -167,6 +184,7 @@ async fn main() -> Result<()> {
             }
 
             mutation::run_mutation(
+                project,
                 if pr == 0 { None } else { Some(pr) },
                 file,
                 one_mutant,
@@ -182,11 +200,13 @@ async fn main() -> Result<()> {
             .await?;
         }
         Commands::Analyze {
+            project,
             folder,
             timeout,
             jobs,
             command,
             survival_threshold,
+            min_score,
             sqlite,
             run_id,
             file_path,
@@ -204,8 +224,28 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            analyze::run_analysis(folder, command, jobs, timeout, survival_threshold, sqlite, run_id, file_path, survivors_only)
-                .await?;
+            if let Some(min) = min_score {
+                if !(0.0..=1.0).contains(&min) {
+                    return Err(MutationError::InvalidInput(
+                        "--min-score must be between 0.0 and 1.0".to_string(),
+                    ));
+                }
+            }
+
+            analyze::run_analysis(
+                project,
+                folder,
+                command,
+                jobs,
+                timeout,
+                survival_threshold,
+                min_score,
+                sqlite,
+                run_id,
+                file_path,
+                survivors_only,
+            )
+            .await?;
         }
     }
 

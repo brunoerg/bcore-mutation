@@ -1,7 +1,11 @@
 use crate::error::{MutationError, Result};
+use crate::project::Project;
 use regex::Regex;
 use std::process::Command;
 use std::str;
+
+/// Local branch name where the secp256k1 `master` is fetched, used as the diff base.
+const SECP256K1_BASE_REF: &str = "secp256k1-master";
 
 pub async fn run_git_command(args: &[&str]) -> Result<Vec<String>> {
     let output = Command::new("git")
@@ -28,7 +32,43 @@ pub async fn get_commit_hash() -> Result<String> {
     Ok(lines.into_iter().next().unwrap_or_default())
 }
 
-pub async fn get_changed_files(pr_number: Option<u32>) -> Result<Vec<String>> {
+pub async fn get_changed_files(pr_number: Option<u32>, project: Project) -> Result<Vec<String>> {
+    match project {
+        Project::BitcoinCore => get_changed_files_bitcoin_core(pr_number).await,
+        Project::Secp256k1 => get_changed_files_secp256k1(pr_number).await,
+    }
+}
+
+/// Fetch a secp256k1 PR directly from its GitHub URL and return the changed files.
+///
+/// Unlike Bitcoin Core (which relies on a configured `upstream`/`origin` remote),
+/// secp256k1 PRs are fetched straight from the repository URL. `master` is also
+/// fetched into a local ref so we have a base to diff against.
+async fn get_changed_files_secp256k1(pr_number: Option<u32>) -> Result<Vec<String>> {
+    let url = Project::Secp256k1.repository_url();
+
+    // Fetch master into a local ref to diff against (force-update to stay current).
+    let fetch_master_args = &["fetch", url, &format!("+master:{}", SECP256K1_BASE_REF)];
+    run_git_command(fetch_master_args).await?;
+
+    if let Some(pr) = pr_number {
+        println!("Fetching secp256k1 PR #{} from {}", pr, url);
+        let fetch_pr_args = &["fetch", url, &format!("pull/{}/head:pr/{}", pr, pr)];
+        run_git_command(fetch_pr_args).await?;
+        println!("Checking out pr/{}...", pr);
+        run_git_command(&["checkout", &format!("pr/{}", pr)]).await?;
+    }
+
+    let diff_args = &[
+        "diff",
+        "--name-only",
+        "--diff-filter=d",
+        &format!("{}...HEAD", SECP256K1_BASE_REF),
+    ];
+    run_git_command(diff_args).await
+}
+
+async fn get_changed_files_bitcoin_core(pr_number: Option<u32>) -> Result<Vec<String>> {
     let mut used_remote = "upstream"; // Track which remote we successfully used
 
     if let Some(pr) = pr_number {
@@ -88,29 +128,44 @@ pub async fn get_changed_files(pr_number: Option<u32>) -> Result<Vec<String>> {
     }
 }
 
-pub async fn get_lines_touched(file_path: &str) -> Result<Vec<usize>> {
-    // Try upstream first
-    let diff_args_upstream = &[
-        "diff",
-        "--unified=0",
-        "upstream/master...HEAD",
-        "--",
-        file_path,
-    ];
-
-    let diff_output = match run_git_command(diff_args_upstream).await {
-        Ok(output) => output,
-        Err(_) => {
-            // Fall back to origin if upstream fails
-            println!("Diff with upstream/master failed, trying origin/master...");
-            let diff_args_origin = &[
+pub async fn get_lines_touched(file_path: &str, project: Project) -> Result<Vec<usize>> {
+    let diff_output = match project {
+        Project::Secp256k1 => {
+            // master was fetched into a local ref by get_changed_files_secp256k1.
+            let diff_args = &[
                 "diff",
                 "--unified=0",
-                "origin/master...HEAD",
+                &format!("{}...HEAD", SECP256K1_BASE_REF),
                 "--",
                 file_path,
             ];
-            run_git_command(diff_args_origin).await?
+            run_git_command(diff_args).await?
+        }
+        Project::BitcoinCore => {
+            // Try upstream first
+            let diff_args_upstream = &[
+                "diff",
+                "--unified=0",
+                "upstream/master...HEAD",
+                "--",
+                file_path,
+            ];
+
+            match run_git_command(diff_args_upstream).await {
+                Ok(output) => output,
+                Err(_) => {
+                    // Fall back to origin if upstream fails
+                    println!("Diff with upstream/master failed, trying origin/master...");
+                    let diff_args_origin = &[
+                        "diff",
+                        "--unified=0",
+                        "origin/master...HEAD",
+                        "--",
+                        file_path,
+                    ];
+                    run_git_command(diff_args_origin).await?
+                }
+            }
         }
     };
 

@@ -12,12 +12,14 @@
 //!
 //! ```rust,no_run
 //! use bcore_mutation::mutation;
+//! use bcore_mutation::project::Project;
 //! use std::collections::HashMap;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Generate mutants for a specific file with AST filtering
 //!     mutation::run_mutation(
+//!         Project::BitcoinCore,        // project
 //!         None,                        // PR number
 //!         Some("src/test.cpp".into()), // file path
 //!         false,                       // one_mutant
@@ -37,12 +39,14 @@
 
 pub mod analyze;
 pub mod ast_analysis;
+pub mod commands;
 pub mod coverage;
 pub mod db;
 pub mod error;
 pub mod git_changes;
 pub mod mutation;
 pub mod operators;
+pub mod project;
 pub mod report;
 
 pub use error::{MutationError, Result};

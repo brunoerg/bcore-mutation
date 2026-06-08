@@ -94,20 +94,25 @@ impl Database {
         Ok(())
     }
 
-    /// Insert the Bitcoin Core project row if not already present.
+    /// Insert the known project rows if not already present.
     pub fn seed_projects(&self) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO projects (name, repository_url) VALUES (?1, ?2)",
-            params!["Bitcoin Core", "https://github.com/bitcoin/bitcoin"],
-        )?;
+        for (name, url) in [
+            ("Bitcoin Core", "https://github.com/bitcoin/bitcoin"),
+            ("secp256k1", "https://github.com/bitcoin-core/secp256k1"),
+        ] {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO projects (name, repository_url) VALUES (?1, ?2)",
+                params![name, url],
+            )?;
+        }
         Ok(())
     }
 
-    /// Return the id of the Bitcoin Core project row.
-    pub fn get_bitcoin_core_project_id(&self) -> Result<i64> {
+    /// Return the id of the project row with the given name.
+    pub fn get_project_id(&self, name: &str) -> Result<i64> {
         let id = self.conn.query_row(
-            "SELECT id FROM projects WHERE name = 'Bitcoin Core'",
-            [],
+            "SELECT id FROM projects WHERE name = ?1",
+            params![name],
             |row| row.get(0),
         )?;
         Ok(id)
@@ -125,7 +130,13 @@ impl Database {
         self.conn.execute(
             "INSERT INTO runs (project_id, commit_hash, tool_version, pr_number, config_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![project_id, commit_hash, tool_version, pr_number, config_json],
+            params![
+                project_id,
+                commit_hash,
+                tool_version,
+                pr_number,
+                config_json
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -175,7 +186,8 @@ impl Database {
                 let mut stmt = self.conn.prepare(
                     "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1 AND file_path = ?2",
                 )?;
-                let rows = stmt.query_map(params![run_id, fp], map_row)?
+                let rows = stmt
+                    .query_map(params![run_id, fp], map_row)?
                     .collect::<rusqlite::Result<_>>()?;
                 rows
             }
@@ -184,15 +196,17 @@ impl Database {
                     "SELECT id, diff, file_path FROM mutants \
                      WHERE run_id = ?1 AND file_path = ?2 AND status = 'survived'",
                 )?;
-                let rows = stmt.query_map(params![run_id, fp], map_row)?
+                let rows = stmt
+                    .query_map(params![run_id, fp], map_row)?
                     .collect::<rusqlite::Result<_>>()?;
                 rows
             }
             (None, false) => {
-                let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1",
-                )?;
-                let rows = stmt.query_map(params![run_id], map_row)?
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT id, diff, file_path FROM mutants WHERE run_id = ?1")?;
+                let rows = stmt
+                    .query_map(params![run_id], map_row)?
                     .collect::<rusqlite::Result<_>>()?;
                 rows
             }
@@ -201,7 +215,8 @@ impl Database {
                     "SELECT id, diff, file_path FROM mutants \
                      WHERE run_id = ?1 AND status = 'survived'",
                 )?;
-                let rows = stmt.query_map(params![run_id], map_row)?
+                let rows = stmt
+                    .query_map(params![run_id], map_row)?
                     .collect::<rusqlite::Result<_>>()?;
                 rows
             }
