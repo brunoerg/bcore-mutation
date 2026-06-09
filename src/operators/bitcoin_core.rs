@@ -140,6 +140,7 @@ impl OperatorSet for BitcoinCore {
             "#",
             "*",
             "assert",
+            "Assert",
             "self.log",
             "Assume",
             "CHECK_NONFATAL",
