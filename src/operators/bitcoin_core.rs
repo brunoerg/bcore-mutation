@@ -149,6 +149,7 @@ impl OperatorSet for BitcoinCore {
             "LogPrintf",
             "LogPrint",
             "LogDebug",
+            "LogInfo",
             "strprintf",
             "G_FUZZING",
             // no-op for FindAndDelete
