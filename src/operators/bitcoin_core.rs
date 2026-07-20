@@ -28,6 +28,15 @@ impl OperatorSet for BitcoinCore {
             ("std::end", "std::begin"),
             ("true", "false"),
             ("false", "true"),
+            // Designated-initializer / member-assignment value mutation: for
+            // any `.field = expr,` or `.field = expr;` (struct init lists,
+            // plain member assignment), force the assigned value. Catches
+            // cases like `.m_preferred = state->fPreferredDownload,` ->
+            // `.m_preferred = true,` that the literal-only true/false swap
+            // above can't reach because the RHS isn't itself the literal
+            // `true`/`false`.
+            (r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}true${3}"),
+            (r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}false${3}"),
             (r" / ", " * "),
             // Boundary (off-by-one) mutations first — hardest to kill
             (r" >= ", " > "),
@@ -230,5 +239,55 @@ impl OperatorSet for BitcoinCore {
             "wait_until",
             "send_and_ping",
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member_assign_to_true_op() -> MutationOperator {
+        MutationOperator::new(r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}true${3}").unwrap()
+    }
+
+    fn member_assign_to_false_op() -> MutationOperator {
+        MutationOperator::new(r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}false${3}")
+            .unwrap()
+    }
+
+    #[test]
+    fn test_designated_initializer_value_is_mutated() {
+        let op = member_assign_to_true_op();
+        let line = "    .m_preferred = state->fPreferredDownload,";
+        assert!(op.pattern.is_match(line));
+        let mutated = op.pattern.replace(line, &op.replacement);
+        assert_eq!(mutated, "    .m_preferred = true,");
+    }
+
+    #[test]
+    fn test_designated_initializer_value_is_mutated_to_false() {
+        let op = member_assign_to_false_op();
+        let line = "    .m_preferred = state->fPreferredDownload,";
+        let mutated = op.pattern.replace(line, &op.replacement);
+        assert_eq!(mutated, "    .m_preferred = false,");
+    }
+
+    #[test]
+    fn test_plain_member_assignment_is_mutated() {
+        let op = member_assign_to_true_op();
+        let line = "peer.m_wtxid_relay = ComputeWtxidRelay();";
+        assert!(op.pattern.is_match(line));
+        let mutated = op.pattern.replace(line, &op.replacement);
+        assert_eq!(mutated, "peer.m_wtxid_relay = true;");
+    }
+
+    #[test]
+    fn test_member_assignment_pattern_ignores_comparisons() {
+        let op = member_assign_to_true_op();
+        assert!(!op.pattern.is_match("if (state.m_count == 5) {"));
+        assert!(!op.pattern.is_match("if (a.count >= b.count) {"));
+        // Would previously match, treating `==` as `=` and corrupting the
+        // comparison into an assignment (`state.m_count =true;`).
+        assert!(!op.pattern.is_match("bool ok = state.m_count == 5;"));
     }
 }
