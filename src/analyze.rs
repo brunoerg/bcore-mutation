@@ -167,6 +167,12 @@ async fn run_db_analysis(
         )));
     }
 
+    // Verify the test command is valid and passes on unmutated code before we
+    // analyze a single mutant. Without this, a bad command (e.g. an invalid
+    // --run_test filter that exits 200) fails for every mutant and is silently
+    // recorded as "killed", yielding a bogus 100% score.
+    check_baseline(command, timeout_secs).await?;
+
     let mut num_killed: u64 = 0;
     let mut num_survived: u64 = 0;
 
@@ -431,6 +437,22 @@ async fn run_command(command: &str, timeout_secs: u64) -> Result<bool> {
     }
 }
 
+/// Run the test command once against **unmutated** code before analyzing any
+/// mutants. If it does not pass, abort the whole run with an error.
+
+async fn check_baseline(command: &str, timeout_secs: u64) -> Result<()> {
+    println!("Baseline check: running the test command on unmutated code...");
+    let passed = run_command(command, timeout_secs).await?;
+    if !passed {
+        return Err(MutationError::InvalidInput(format!(
+            "Test command failed before any mutant was applied. Fix the command and re-run. Command: {}",
+            command
+        )));
+    }
+    println!("Baseline check passed: the test command succeeds.\n");
+    Ok(())
+}
+
 async fn run_build_command(project_commands: &dyn ProjectCommands) -> Result<()> {
     let build_command = project_commands.build_command();
 
@@ -463,27 +485,57 @@ mod tests {
     #[test]
     fn test_enforce_min_score() {
         // No gate configured: always Ok regardless of score.
-        assert!(enforce_min_score(ScoreSummary { killed: 0, total: 10 }, None).is_ok());
+        assert!(enforce_min_score(
+            ScoreSummary {
+                killed: 0,
+                total: 10
+            },
+            None
+        )
+        .is_ok());
 
         // Above threshold passes.
-        assert!(enforce_min_score(ScoreSummary { killed: 9, total: 10 }, Some(0.8)).is_ok());
+        assert!(enforce_min_score(
+            ScoreSummary {
+                killed: 9,
+                total: 10
+            },
+            Some(0.8)
+        )
+        .is_ok());
 
         // Exactly at threshold passes (gate uses `<`, so >= passes).
-        assert!(enforce_min_score(ScoreSummary { killed: 8, total: 10 }, Some(0.8)).is_ok());
+        assert!(enforce_min_score(
+            ScoreSummary {
+                killed: 8,
+                total: 10
+            },
+            Some(0.8)
+        )
+        .is_ok());
 
         // Below threshold fails with the dedicated error variant.
-        let result = enforce_min_score(ScoreSummary { killed: 5, total: 10 }, Some(0.8));
-        assert!(matches!(
-            result,
-            Err(MutationError::ScoreBelowThreshold(_))
-        ));
+        let result = enforce_min_score(
+            ScoreSummary {
+                killed: 5,
+                total: 10,
+            },
+            Some(0.8),
+        );
+        assert!(matches!(result, Err(MutationError::ScoreBelowThreshold(_))));
     }
 
     #[test]
     fn test_score_summary_aggregates() {
         let mut overall = ScoreSummary::default();
-        overall.add(ScoreSummary { killed: 3, total: 4 });
-        overall.add(ScoreSummary { killed: 1, total: 6 });
+        overall.add(ScoreSummary {
+            killed: 3,
+            total: 4,
+        });
+        overall.add(ScoreSummary {
+            killed: 1,
+            total: 6,
+        });
         assert_eq!(overall.killed, 4);
         assert_eq!(overall.total, 10);
         assert!((overall.score() - 0.4).abs() < f64::EPSILON);
@@ -502,6 +554,17 @@ mod tests {
         // Test command that should timeout (note: this might be flaky in CI)
         let result = run_command("sleep 10", 1).await.unwrap();
         assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_check_baseline() {
+        // Test a command that passes on unmutated code lets the run proceed.
+        assert!(check_baseline("true", 5).await.is_ok());
+
+        // Test a command that fails on unmutated code aborts the run.
+        let result= check_baseline("exit 200", 5).await;
+        assert!(matches!(result, Err(MutationError::InvalidInput(_))));
+
     }
 
     #[test]
