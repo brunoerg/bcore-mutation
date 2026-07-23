@@ -16,6 +16,14 @@ pub(crate) fn regex_operators() -> Vec<(&'static str, &'static str)> {
         ("break", "continue"),
         ("true", "false"),
         ("false", "true"),
+        // Designated-initializer / member-assignment value mutation: for any
+        // `.field = expr,` or `.field = expr;` (struct init lists, plain
+        // member assignment), force the assigned value. Catches cases like
+        // `.m_preferred = state->fPreferredDownload,` -> `.m_preferred = true,`
+        // that the literal-only true/false swap above can't reach because the
+        // RHS isn't itself the literal `true`/`false`.
+        (r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}true${3}"),
+        (r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}false${3}"),
         (r" / ", " * "),
         // Boundary (off-by-one) mutations first — hardest to kill
         (r" >= ", " > "),
