@@ -11,8 +11,10 @@ mod error;
 mod git_changes;
 mod mutation;
 mod operators;
+mod parallel;
 mod project;
 mod report;
+mod workspace;
 
 use error::{MutationError, Result};
 use project::Project;
@@ -95,9 +97,21 @@ enum Commands {
         #[arg(short, long, default_value = "0")]
         jobs: u32,
 
+        /// Number of mutants to verify concurrently
+        #[arg(short = 'P', long, default_value = "1")]
+        parallel: usize,
+
         /// Command to test the mutants
         #[arg(short, long)]
         command: Option<String>,
+
+        /// One-time command used to prepare each isolated worker workspace
+        #[arg(long, value_name = "CMD")]
+        setup_command: Option<String>,
+
+        /// Keep temporary parallel worker worktrees for debugging
+        #[arg(long)]
+        keep_worktrees: bool,
 
         /// Maximum acceptable survival rate (0.3 = 30%)
         #[arg(long, default_value = "0.75")]
@@ -204,7 +218,10 @@ async fn main() -> Result<()> {
             folder,
             timeout,
             jobs,
+            parallel,
             command,
+            setup_command,
+            keep_worktrees,
             survival_threshold,
             min_score,
             sqlite,
@@ -232,19 +249,41 @@ async fn main() -> Result<()> {
                 }
             }
 
-            analyze::run_analysis(
+            if parallel == 0 {
+                return Err(MutationError::InvalidInput(
+                    "--parallel must be at least 1".to_string(),
+                ));
+            }
+
+            if parallel > 1 && jobs > 0 {
+                if let Ok(available) = std::thread::available_parallelism() {
+                    let requested = parallel.saturating_mul(jobs as usize);
+                    if requested > available.get() {
+                        eprintln!(
+                            "Warning: --parallel {parallel} × --jobs {jobs} may use \
+                             {requested} compiler jobs on {} available CPUs",
+                            available.get()
+                        );
+                    }
+                }
+            }
+
+            analyze::run_analysis_with_options(analyze::AnalysisOptions {
                 project,
                 folder,
                 command,
+                setup_command,
                 jobs,
-                timeout,
+                parallel,
+                timeout_secs: timeout,
                 survival_threshold,
                 min_score,
-                sqlite,
+                sqlite_path: sqlite,
                 run_id,
                 file_path,
                 survivors_only,
-            )
+                keep_worktrees,
+            })
             .await?;
         }
     }
@@ -256,4 +295,27 @@ fn read_skip_lines(path: &PathBuf) -> Result<HashMap<String, Vec<usize>>> {
     let content = std::fs::read_to_string(path)?;
     let map: HashMap<String, Vec<usize>> = serde_json::from_str(&content)?;
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analyze_parallel_defaults_to_one() {
+        let cli = Cli::try_parse_from(["bcore-mutation", "analyze"]).unwrap();
+        match cli.command {
+            Commands::Analyze { parallel, .. } => assert_eq!(parallel, 1),
+            Commands::Mutate { .. } => panic!("expected analyze command"),
+        }
+    }
+
+    #[test]
+    fn analyze_accepts_arbitrary_parallel_value() {
+        let cli = Cli::try_parse_from(["bcore-mutation", "analyze", "--parallel", "17"]).unwrap();
+        match cli.command {
+            Commands::Analyze { parallel, .. } => assert_eq!(parallel, 17),
+            Commands::Mutate { .. } => panic!("expected analyze command"),
+        }
+    }
 }

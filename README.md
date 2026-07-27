@@ -141,9 +141,12 @@ When `--sqlite` is used, the `mutate` command prints a `run_id` that you pass to
 | `--folder PATH` | `-f` | | Folder containing mutants (alternative to `--sqlite` / `--run-id`). |
 | `--timeout SECONDS` | `-t` | `300` | Timeout in seconds for each mutant's test run. |
 | `--jobs N` | `-j` | `0` | Number of parallel jobs passed to the compiler (e.g. `make -j N`). `0` uses the system default. |
+| `--parallel N` | `-P` | `1` | Number of mutants to verify concurrently. Values larger than the number of mutants are capped automatically. |
+| `--setup-command CMD` | | | Command run once in every isolated parallel worker before its baseline check. Useful for configuring a fresh `build/` directory. |
+| `--keep-worktrees` | | | Preserve temporary parallel worker worktrees for debugging instead of removing them. |
 | `--survival-threshold RATE` | | `0.75` | Maximum acceptable mutant survival rate (e.g. `0.3` = 30%). The run exits with an error if the threshold is exceeded. |
 | `--min-score RATE` | | | CI gate: fail with a non-zero exit code if the final mutation score (killed / total) is below this value (e.g. `0.8` = 80%). Aggregated across all analyzed folders. When unset, the score is not enforced. |
-| `--surviving` | | | Only analyze mutants that survived a previous run. Requires `--run-id`. |
+| `--survivors-only` | | | Only analyze mutants that survived a previous run. Requires `--run-id`. |
 
 ### Examples
 
@@ -163,7 +166,7 @@ bcore-mutation analyze --sqlite --run-id=1 --file-path="src/net_processing.cpp" 
 
 **Retry only survivors from a previous run:**
 ```bash
-bcore-mutation analyze --sqlite --run-id=1 --surviving \
+bcore-mutation analyze --sqlite --run-id=1 --survivors-only \
   -c "cmake --build build && ./build/test/functional/wallet_test.py"
 ```
 
@@ -182,6 +185,28 @@ bcore-mutation analyze --project secp256k1 --min-score 0.8
 bcore-mutation analyze --sqlite --run-id=1 -t 120 -j 8 \
   -c "cmake --build build && ./build/test/functional/wallet_test.py"
 ```
+
+**Verify mutants with three parallel workers:**
+```bash
+bcore-mutation analyze --sqlite --run-id=1 --parallel 3 --jobs 4 \
+  --setup-command "cmake -B build -DENABLE_IPC=OFF && cmake --build build -j4" \
+  -c "cmake --build build -j4 && ./build/bin/test_bitcoin"
+```
+
+Parallel workers are assigned mutants dynamically, so a worker receives the
+next pending mutant as soon as it finishes its current one. Each worker uses a
+detached Git worktree and its own `build/` directory; the checkout from which
+`bcore-mutation` was started is not modified. A custom test command runs from
+the worker directory. If the command references a sibling path such as
+`../qa-assets`, parallel mode links the matching sibling from the original
+checkout's parent into the temporary worker root, so existing Bitcoin Core fuzz
+corpus commands keep working without copying the corpus. Fresh worktrees do not
+contain an existing build, so provide `--setup-command` unless the test command
+configures the build itself.
+
+`--parallel` controls concurrent mutants while `--jobs` controls parallel jobs
+inside each build. For example, `--parallel 3 --jobs 4` can run approximately
+12 compiler jobs and also requires disk space for three build trees.
 
 **Set a survival rate threshold:**
 ```bash
