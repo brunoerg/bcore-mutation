@@ -222,6 +222,25 @@ bcore-mutation analyze --sqlite --run-id=1 --survival-threshold=0.2 \
 cargo test
 ```
 
+## Benchmarking Parallel Analysis
+
+The `benchmark/` directory contains a Docker-based harness that runs the same
+SQLite mutation run with multiple `--parallel` / `--jobs` configurations and
+generates CSV results plus timing and speedup charts.
+
+```bash
+bash benchmark/run-in-docker.sh /path/to/bitcoin \
+  --db mutation.db \
+  --run-id 123 \
+  --repeats 3 \
+  --case sequential:1:3 \
+  --case parallel-3x3:3:3 \
+  --command "cmake --build build -j3 && ./build/bin/test_bitcoin"
+```
+
+See `benchmark/README.md` for the fuzzing-oriented example that keeps
+`../qa-assets` available inside Docker.
+
 ## Contributing
 
 1. Fork the repository.

@@ -1,0 +1,7 @@
+target/
+.git/
+.DS_Store
+mutation.db
+benchmark-results/
+*.log
+
