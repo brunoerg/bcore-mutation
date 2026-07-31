@@ -25,6 +25,10 @@ fn build_config_json(range_lines: Option<(usize, usize)>) -> Option<String> {
     range_lines.map(|(start, end)| format!("{{\"range\":[{},{}]}}", start, end))
 }
 
+fn should_mutate_changed_file(project: Project, file_path: &str) -> bool {
+    !project.should_skip_file(file_path) && Path::new(file_path).is_file()
+}
+
 pub async fn run_mutation(
     project: Project,
     pr_number: Option<u32>,
@@ -93,7 +97,9 @@ pub async fn run_mutation(
         for file_changed in files_changed {
             // Skip non-source files (docs, tooling, benchmarks, ...).
             // The exact set is project-specific; see `Project::should_skip_file`.
-            if project.should_skip_file(&file_changed) {
+            // Also skip deleted/missing files so PR mutation only targets files
+            // that can actually be read in the checked-out worktree.
+            if !should_mutate_changed_file(project, &file_changed) {
                 continue;
             }
 
@@ -563,6 +569,31 @@ mod tests {
 
         let content = fs::read_to_string(folder_path.join("original_file.txt")).unwrap();
         assert_eq!(content, "test/file.cpp");
+    }
+
+    #[test]
+    fn test_should_mutate_changed_file_requires_existing_source_file() {
+        let temp_dir = tempdir().unwrap();
+        let source_file = temp_dir.path().join("src/node.cpp");
+        fs::create_dir_all(source_file.parent().unwrap()).unwrap();
+        fs::write(&source_file, "int value = 1;\n").unwrap();
+
+        let doc_file = temp_dir.path().join("doc/example.cpp");
+        fs::create_dir_all(doc_file.parent().unwrap()).unwrap();
+        fs::write(&doc_file, "int value = 1;\n").unwrap();
+
+        assert!(should_mutate_changed_file(
+            Project::BitcoinCore,
+            source_file.to_str().unwrap()
+        ));
+        assert!(!should_mutate_changed_file(
+            Project::BitcoinCore,
+            temp_dir.path().join("src/deleted.cpp").to_str().unwrap()
+        ));
+        assert!(!should_mutate_changed_file(
+            Project::BitcoinCore,
+            doc_file.to_str().unwrap()
+        ));
     }
 
     #[test]
