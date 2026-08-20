@@ -11,12 +11,23 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command as TokioCommand;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{interval_at, sleep, timeout, Instant as TokioInstant};
+
+/// How often a running command reports that it is still alive.
+const PROGRESS_INTERVAL_SECS: u64 = 60;
+
+/// Grace period for a terminated process group before it is killed outright.
+const TERMINATE_GRACE_SECS: u64 = 5;
+
+/// Grace period for output pipes to close after the command exits.
+const PIPE_DRAIN_GRACE_SECS: u64 = 5;
 
 #[derive(Clone, Debug)]
 enum MutantIdentity {
@@ -63,7 +74,26 @@ struct CommandExecution {
     stdout: String,
     stderr: String,
     timed_out: bool,
+    /// The run was cancelled (Ctrl+C) and the process tree terminated.
+    cancelled: bool,
     spawn_error: Option<String>,
+}
+
+/// Receiver side of a cancellation request shared by every command of a run.
+///
+/// A dropped sender never cancels: commands only stop when `true` is sent.
+type CancelSignal = watch::Receiver<bool>;
+
+/// Resolves once a cancellation has been requested on `signal`.
+async fn cancelled(signal: &mut CancelSignal) {
+    loop {
+        if *signal.borrow_and_update() {
+            return;
+        }
+        if signal.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -570,19 +600,29 @@ async fn run_checked_on_all(
         workspaces.len()
     );
 
-    let command_runs = join_all(workspaces.iter().map(|workspace| async move {
-        (
-            workspace.id,
-            capture_command(workspace, command, timeout_secs).await,
-        )
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let command_runs = join_all(workspaces.iter().map(|workspace| {
+        let cancel = cancel_rx.clone();
+        async move {
+            let label = format!("[worker {}][{phase}]", workspace.id);
+            let execution =
+                capture_command(workspace, command, timeout_secs, &label, cancel).await;
+            (workspace.id, execution)
+        }
     }));
+    tokio::pin!(command_runs);
     let executions = tokio::select! {
-        executions = command_runs => executions,
+        executions = &mut command_runs => executions,
         signal = tokio::signal::ctrl_c() => {
             let signal_note = signal
                 .err()
                 .map(|error| format!(": {error}"))
                 .unwrap_or_default();
+            // Let every worker terminate its process tree before the
+            // worktrees those processes run in are removed.
+            println!("Cancelling {phase}; terminating worker commands...");
+            let _ = cancel_tx.send(true);
+            command_runs.await;
             return Err(MutationError::Command(format!(
                 "parallel analysis cancelled during {phase}{signal_note}"
             )));
@@ -699,6 +739,7 @@ where
     }
 
     let worker_count = workspaces.len().min(jobs.len());
+    let (cancel_tx, cancel_rx) = watch::channel(false);
     let (result_tx, mut result_rx) = mpsc::channel::<WorkerMessage>(worker_count);
     let mut job_senders = Vec::with_capacity(worker_count);
     let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
@@ -710,7 +751,9 @@ where
             workspace,
             job_rx,
             worker_result_tx,
+            cancel_rx.clone(),
             timeout_secs,
+            jobs.len(),
         )));
         job_senders.push(job_tx);
     }
@@ -719,15 +762,15 @@ where
     let mut next_job = 0usize;
     let mut in_flight = 0usize;
     let mut active_jobs = vec![None; worker_count];
-    for sender in &job_senders {
+    for (worker_index, sender) in job_senders.iter().enumerate() {
         let job = jobs[next_job].clone();
         if let Err(error) = on_dispatch(&job) {
-            abort_workers(job_senders, handles).await;
+            cancel_workers(cancel_tx, job_senders, handles).await;
             return Err(error);
         }
-        active_jobs[next_job] = Some(job.clone());
+        active_jobs[worker_index] = Some(job.clone());
         if sender.send(job).await.is_err() {
-            abort_workers(job_senders, handles).await;
+            cancel_workers(cancel_tx, job_senders, handles).await;
             return Err(MutationError::Command(
                 "parallel worker stopped before receiving a job".to_string(),
             ));
@@ -739,6 +782,7 @@ where
     let mut results = Vec::with_capacity(jobs.len());
     let mut stop_scheduling = false;
     let mut fatal_error = None;
+    let mut cancel_requested = false;
 
     while in_flight > 0 {
         let message = tokio::select! {
@@ -746,7 +790,7 @@ where
                 match message {
                     Some(message) => message,
                     None => {
-                        abort_workers(job_senders, handles).await;
+                        cancel_workers(cancel_tx, job_senders, handles).await;
                         return Err(MutationError::Command(
                             "all parallel workers stopped before returning their results"
                                 .to_string(),
@@ -754,26 +798,27 @@ where
                     }
                 }
             }
-            signal = tokio::signal::ctrl_c() => {
+            signal = tokio::signal::ctrl_c(), if !cancel_requested => {
                 let signal_note = signal
                     .err()
                     .map(|error| format!(": {error}"))
                     .unwrap_or_default();
-                for (worker_id, job) in active_jobs.iter().enumerate() {
-                    if let Some(job) = job {
-                        let cancelled = error_result(
-                            worker_id,
-                            job.clone(),
-                            "analysis cancelled before the mutant completed".to_string(),
-                            false,
-                        );
-                        let _ = on_result(&cancelled);
-                    }
+                // Workers terminate their process trees and report the
+                // interrupted mutants as errors; keep draining those results
+                // so the database does not keep rows marked as running.
+                println!(
+                    "\nCancelling analysis; waiting for {in_flight} running command(s) to \
+                     terminate..."
+                );
+                cancel_requested = true;
+                stop_scheduling = true;
+                let _ = cancel_tx.send(true);
+                if fatal_error.is_none() {
+                    fatal_error = Some(MutationError::Command(format!(
+                        "parallel analysis cancelled{signal_note}"
+                    )));
                 }
-                abort_workers(job_senders, handles).await;
-                return Err(MutationError::Command(format!(
-                    "parallel analysis cancelled{signal_note}"
-                )));
+                continue;
             }
         };
         in_flight -= 1;
@@ -868,11 +913,19 @@ where
     })
 }
 
-async fn abort_workers(job_senders: Vec<mpsc::Sender<MutantJob>>, handles: Vec<JoinHandle<()>>) {
+/// Stops the workers, terminating any command they are running.
+///
+/// Workers are not aborted: an aborted task only kills the shell it spawned
+/// and leaves the build or test processes behind. Instead each worker is
+/// asked to cancel, terminates its whole process tree, and then exits because
+/// its job channel is closed.
+async fn cancel_workers(
+    cancel_tx: watch::Sender<bool>,
+    job_senders: Vec<mpsc::Sender<MutantJob>>,
+    handles: Vec<JoinHandle<()>>,
+) {
+    let _ = cancel_tx.send(true);
     drop(job_senders);
-    for handle in &handles {
-        handle.abort();
-    }
     for handle in handles {
         let _ = handle.await;
     }
@@ -882,10 +935,12 @@ async fn worker_loop(
     workspace: WorkerWorkspace,
     mut jobs: mpsc::Receiver<MutantJob>,
     results: mpsc::Sender<WorkerMessage>,
+    cancel: CancelSignal,
     timeout_secs: u64,
+    total: usize,
 ) {
     while let Some(job) = jobs.recv().await {
-        let result = execute_mutant(&workspace, job, timeout_secs).await;
+        let result = execute_mutant(&workspace, job, cancel.clone(), timeout_secs, total).await;
         let usable = result.workspace_usable;
         if results.send(WorkerMessage { result }).await.is_err() || !usable {
             break;
@@ -896,7 +951,9 @@ async fn worker_loop(
 async fn execute_mutant(
     workspace: &WorkerWorkspace,
     job: MutantJob,
+    cancel: CancelSignal,
     timeout_secs: u64,
+    total: usize,
 ) -> MutantResult {
     if let Err(error) = restore_file(&workspace.path, &job.target_file).await {
         return error_result(workspace.id, job, error.to_string(), false);
@@ -921,14 +978,23 @@ async fn execute_mutant(
         return error_result(workspace.id, job, detail, usable);
     }
 
-    let execution = capture_command(workspace, &job.command, timeout_secs).await;
-    let status = if execution.success {
+    let label = mutant_label(workspace.id, &job, total);
+    let execution = capture_command(workspace, &job.command, timeout_secs, &label, cancel).await;
+    let status = if execution.cancelled {
+        MutantStatus::Error
+    } else if execution.success {
         MutantStatus::Survived
     } else {
         MutantStatus::Killed
     };
 
     match restore_file(&workspace.path, &job.target_file).await {
+        Ok(()) if execution.cancelled => error_result(
+            workspace.id,
+            job,
+            "analysis cancelled before the mutant completed".to_string(),
+            true,
+        ),
         Ok(()) => MutantResult {
             worker_id: workspace.id,
             job,
@@ -1007,10 +1073,88 @@ async fn restore_file(workspace: &Path, target_file: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Output captured from a running command, shared with its reader tasks.
+#[derive(Default)]
+struct CapturedOutput {
+    stdout: String,
+    stderr: String,
+    last_line: Option<String>,
+}
+
+/// Reads one output stream into `captured` until it closes.
+///
+/// Lines are decoded lossily so that non-UTF-8 build output does not truncate
+/// the capture.
+async fn capture_stream<R>(stream: R, captured: Arc<Mutex<CapturedOutput>>, is_stderr: bool)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(stream);
+    let mut buffer = Vec::new();
+
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buffer);
+                let mut captured = captured
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if is_stderr {
+                    captured.stderr.push_str(&line);
+                } else {
+                    captured.stdout.push_str(&line);
+                }
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    captured.last_line = Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Kills a command's process group if the command is dropped before it
+/// finished, for example when the runtime shuts down during a panic.
+///
+/// Cooperative cancellation through [`CancelSignal`] is the normal path; this
+/// only guarantees that no build or test process outlives the tool.
+struct ProcessGroupGuard {
+    process_id: Option<u32>,
+    armed: bool,
+}
+
+impl ProcessGroupGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        #[cfg(unix)]
+        if let Some(group) = self.process_id.and_then(|id| i32::try_from(id).ok()) {
+            signal_process_group(group, libc::SIGKILL);
+        }
+    }
+}
+
+/// Runs `command` in a worker workspace, reporting progress while it runs.
+///
+/// Output is streamed rather than buffered by the child process, so a command
+/// that produces nothing for a long time can still be distinguished from one
+/// that has stopped making progress. When `cancel` fires, the whole process
+/// tree is terminated and the execution is reported as cancelled.
 async fn capture_command(
     workspace: &WorkerWorkspace,
     command: &str,
     timeout_secs: u64,
+    label: &str,
+    mut cancel: CancelSignal,
 ) -> CommandExecution {
     let (shell, shell_arg) = if cfg!(target_os = "windows") {
         ("cmd", "/C")
@@ -1018,8 +1162,8 @@ async fn capture_command(
         ("sh", "-c")
     };
 
-    let mut child = TokioCommand::new(shell);
-    child
+    let mut builder = TokioCommand::new(shell);
+    builder
         .current_dir(&workspace.path)
         .envs(workspace.environment())
         .arg(shell_arg)
@@ -1027,52 +1171,225 @@ async fn capture_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Own the whole descendant tree: a timeout must not leave background
+    // builds or bitcoind nodes behind, holding ports and output pipes that
+    // later mutants would then trip over.
+    #[cfg(unix)]
+    builder.process_group(0);
 
-    match timeout(Duration::from_secs(timeout_secs), child.output()).await {
-        Ok(Ok(output)) => CommandExecution {
-            success: output.status.success(),
-            exit_code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            timed_out: false,
+    let mut child = match builder.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return CommandExecution {
+                success: false,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                spawn_error: Some(error.to_string()),
+            }
+        }
+    };
+
+    let process_id = child.id();
+    let mut group_guard = ProcessGroupGuard {
+        process_id,
+        armed: true,
+    };
+    let captured = Arc::new(Mutex::new(CapturedOutput::default()));
+    let mut readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        readers.push(tokio::spawn(capture_stream(
+            stdout,
+            Arc::clone(&captured),
+            false,
+        )));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(tokio::spawn(capture_stream(
+            stderr,
+            Arc::clone(&captured),
+            true,
+        )));
+    }
+
+    let started = Instant::now();
+    let interval = Duration::from_secs(PROGRESS_INTERVAL_SECS);
+    let mut heartbeat = interval_at(TokioInstant::now() + interval, interval);
+    let limit = Duration::from_secs(timeout_secs);
+    let mut timed_out = false;
+    let mut was_cancelled = false;
+
+    let wait_result = {
+        let waiter = child.wait();
+        tokio::pin!(waiter);
+
+        loop {
+            let terminated = timed_out || was_cancelled;
+            tokio::select! {
+                result = &mut waiter => break result,
+                _ = heartbeat.tick() => {
+                    println!("{label} {}", progress_note(&captured, started.elapsed()));
+                }
+                _ = sleep(limit.saturating_sub(started.elapsed())), if !terminated => {
+                    timed_out = true;
+                    println!(
+                        "{label} Command timed out after {}; terminating the process tree",
+                        format_elapsed(started.elapsed())
+                    );
+                    terminate_process_tree(process_id).await;
+                }
+                _ = cancelled(&mut cancel), if !terminated => {
+                    was_cancelled = true;
+                    println!(
+                        "{label} Analysis cancelled after {}; terminating the process tree",
+                        format_elapsed(started.elapsed())
+                    );
+                    terminate_process_tree(process_id).await;
+                }
+            }
+        }
+    };
+
+    // A descendant that outlives the shell keeps the output pipes open, which
+    // would otherwise block this command forever with no CPU use and no output.
+    let drain = async {
+        for reader in readers.drain(..) {
+            let _ = reader.await;
+        }
+    };
+    if timeout(Duration::from_secs(PIPE_DRAIN_GRACE_SECS), drain)
+        .await
+        .is_err()
+    {
+        println!("{label} Command left background processes holding its output; terminating them");
+        terminate_process_tree(process_id).await;
+        for reader in readers {
+            reader.abort();
+        }
+    }
+
+    group_guard.disarm();
+    let captured = {
+        let mut guard = captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *guard)
+    };
+
+    match wait_result {
+        Ok(status) => CommandExecution {
+            success: !timed_out && !was_cancelled && status.success(),
+            exit_code: status.code(),
+            stdout: captured.stdout,
+            stderr: captured.stderr,
+            timed_out,
+            cancelled: was_cancelled,
             spawn_error: None,
         },
-        Ok(Err(error)) => CommandExecution {
+        Err(error) => CommandExecution {
             success: false,
             exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            timed_out: false,
+            stdout: captured.stdout,
+            stderr: captured.stderr,
+            timed_out,
+            cancelled: was_cancelled,
             spawn_error: Some(error.to_string()),
-        },
-        Err(_) => CommandExecution {
-            success: false,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            timed_out: true,
-            spawn_error: None,
         },
     }
 }
 
-fn print_mutant_result(result: &MutantResult, total: usize) {
-    let identity = match &result.job.identity {
+/// Progress line for a command that is still running.
+fn progress_note(captured: &Arc<Mutex<CapturedOutput>>, elapsed: Duration) -> String {
+    let last_line = captured
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .last_line
+        .clone();
+    let elapsed = format_elapsed(elapsed);
+
+    match last_line {
+        Some(line) => format!("still running, {elapsed} elapsed (last output: {line})"),
+        None => format!("still running, {elapsed} elapsed (no output yet)"),
+    }
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    let (hours, minutes, seconds) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
+
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Terminates the command and every process it started.
+///
+/// The shell runs in its own process group, so signalling the group also
+/// reaches builds and test nodes that the shell itself spawned. Killing only
+/// the shell would leave those behind, holding ports and output pipes that
+/// later mutants then trip over.
+#[cfg(unix)]
+async fn terminate_process_tree(process_id: Option<u32>) {
+    let Some(group) = process_id.and_then(|id| i32::try_from(id).ok()) else {
+        return;
+    };
+
+    // SIGTERM first: bitcoind shuts down cleanly, and a build killed outright
+    // can leave the worker's build directory in a state the next mutant has to
+    // repair.
+    signal_process_group(group, libc::SIGTERM);
+    sleep(Duration::from_secs(TERMINATE_GRACE_SECS)).await;
+    signal_process_group(group, libc::SIGKILL);
+}
+
+#[cfg(unix)]
+fn signal_process_group(group: i32, signal: i32) {
+    // SAFETY: `kill` is async-signal-safe, and the negative pid addresses the
+    // process group this command was started in. The group is only signalled
+    // while the command owns it, or immediately after it exits with children
+    // still running, where the leader's pid has not yet been reused in
+    // practice.
+    unsafe {
+        libc::kill(-group, signal);
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_process_tree(process_id: Option<u32>) {
+    let Some(process_id) = process_id else {
+        return;
+    };
+
+    let _ = TokioCommand::new("taskkill")
+        .args(["/T", "/F", "/PID", &process_id.to_string()])
+        .output()
+        .await;
+}
+
+fn mutant_label(worker_id: usize, job: &MutantJob, total: usize) -> String {
+    let identity = match &job.identity {
         MutantIdentity::Database(id) => format!("mutant {id}"),
         MutantIdentity::Folder(name) => name.clone(),
     };
+    format!(
+        "[worker {worker_id}][{}/{total}][{identity}]",
+        job.sequence + 1
+    )
+}
+
+fn print_mutant_result(result: &MutantResult, total: usize) {
     let status = match result.status {
         MutantStatus::Killed => "KILLED ✅",
         MutantStatus::Survived => "NOT KILLED ❌",
         MutantStatus::Error => "ERROR",
     };
-    let prefix = format!(
-        "[worker {}][{}/{}][{}]",
-        result.worker_id,
-        result.job.sequence + 1,
-        total,
-        identity
-    );
+    let prefix = mutant_label(result.worker_id, &result.job, total);
     println!("{prefix} {status}");
 
     if let Some(execution) = &result.command {
@@ -1085,7 +1402,9 @@ fn print_mutant_result(result: &MutantResult, total: usize) {
 
 fn print_command_execution(prefix: &str, command: &str, execution: &CommandExecution) {
     println!("{prefix} Command: {command}");
-    if execution.timed_out {
+    if execution.cancelled {
+        println!("{prefix} Command cancelled");
+    } else if execution.timed_out {
         println!("{prefix} Command timed out");
     } else if let Some(error) = &execution.spawn_error {
         println!("{prefix} Command execution failed: {error}");
@@ -1125,6 +1444,128 @@ mod tests {
         assert!(validate_target_path("").is_err());
     }
 
+    /// Cancellation signal that never fires.
+    fn never_cancelled() -> CancelSignal {
+        watch::channel(false).1
+    }
+
+    fn scratch_workspace(root: &tempfile::TempDir) -> WorkerWorkspace {
+        let temp_dir = root.path().join("tmp");
+        fs::create_dir_all(&temp_dir).unwrap();
+        WorkerWorkspace {
+            id: 0,
+            path: root.path().to_path_buf(),
+            temp_dir,
+            port_floor: None,
+        }
+    }
+
+    #[test]
+    fn elapsed_time_is_reported_in_readable_units() {
+        assert_eq!(format_elapsed(Duration::from_secs(9)), "9s");
+        assert_eq!(format_elapsed(Duration::from_secs(125)), "2m05s");
+        assert_eq!(format_elapsed(Duration::from_secs(3_930)), "1h05m");
+    }
+
+    #[test]
+    fn progress_note_quotes_the_most_recent_output_line() {
+        let captured = Arc::new(Mutex::new(CapturedOutput::default()));
+        assert_eq!(
+            progress_note(&captured, Duration::from_secs(90)),
+            "still running, 1m30s elapsed (no output yet)"
+        );
+
+        captured.lock().unwrap().last_line = Some("[ 45%] Building CXX object".to_string());
+        assert_eq!(
+            progress_note(&captured, Duration::from_secs(90)),
+            "still running, 1m30s elapsed (last output: [ 45%] Building CXX object)"
+        );
+    }
+
+    /// A timeout must reclaim the whole process tree; a surviving build or
+    /// bitcoind would hold ports and datadirs that later mutants trip over.
+    #[tokio::test]
+    async fn a_timeout_terminates_processes_started_by_the_command() {
+        let root = tempdir().unwrap();
+        let workspace = scratch_workspace(&root);
+        let marker = root.path().join("leaked");
+
+        let execution = capture_command(
+            &workspace,
+            "(sleep 3; touch leaked) & sleep 30",
+            1,
+            "[test]",
+            never_cancelled(),
+        )
+        .await;
+
+        assert!(execution.timed_out);
+        assert!(!execution.success);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            !marker.exists(),
+            "background process outlived the timed out command"
+        );
+    }
+
+    /// Cancelling a run must reclaim the process tree too: an aborted task
+    /// would only kill the shell and leave builds or bitcoind nodes behind.
+    #[tokio::test]
+    async fn cancellation_terminates_processes_started_by_the_command() {
+        let root = tempdir().unwrap();
+        let workspace = scratch_workspace(&root);
+        let marker = root.path().join("leaked");
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+
+        let command = capture_command(
+            &workspace,
+            "(sleep 3; touch leaked) & sleep 30",
+            300,
+            "[test]",
+            cancel_rx,
+        );
+        let trigger = async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            cancel_tx.send(true).unwrap();
+        };
+        let (execution, ()) = tokio::join!(command, trigger);
+
+        assert!(execution.cancelled);
+        assert!(!execution.success);
+        assert!(!execution.timed_out);
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            !marker.exists(),
+            "background process outlived the cancelled command"
+        );
+    }
+
+    /// Reproduces the reported stall: a command that leaves a background
+    /// process holding its output pipe used to block until the timeout, with
+    /// no CPU use and nothing printed.
+    #[tokio::test]
+    async fn a_command_that_leaves_background_processes_still_completes() {
+        let root = tempdir().unwrap();
+        let workspace = scratch_workspace(&root);
+
+        let execution = timeout(
+            Duration::from_secs(45),
+            capture_command(
+                &workspace,
+                "(sleep 120 &) ; echo done",
+                300,
+                "[test]",
+                never_cancelled(),
+            ),
+        )
+        .await
+        .expect("command hung waiting for a background process to release its output");
+
+        assert!(execution.success);
+        assert!(!execution.timed_out);
+        assert!(execution.stdout.contains("done"));
+    }
+
     #[test]
     fn baseline_failure_only_suggests_setup_when_none_was_provided() {
         let execution = CommandExecution {
@@ -1133,6 +1574,7 @@ mod tests {
             stdout: "*** No errors detected\n".to_string(),
             stderr: "FileExistsError: [Errno 17] File exists: '/tmp/test_runner_x'\n".to_string(),
             timed_out: false,
+            cancelled: false,
             spawn_error: None,
         };
 
@@ -1153,6 +1595,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             timed_out: true,
+            cancelled: false,
             spawn_error: None,
         };
         assert_eq!(failure_reason(&timed_out, 90), "timed out after 90s");
@@ -1163,6 +1606,7 @@ mod tests {
             stdout: "first\n\nlast\n".to_string(),
             stderr: "   \n".to_string(),
             timed_out: false,
+            cancelled: false,
             spawn_error: None,
         };
         assert_eq!(
@@ -1181,8 +1625,14 @@ mod tests {
 
         let mut observed = Vec::new();
         for workspace in pool.workspaces() {
-            let execution =
-                capture_command(workspace, "echo \"$TMPDIR $TEST_RUNNER_PORT_MIN\"", 30).await;
+            let execution = capture_command(
+                workspace,
+                "echo \"$TMPDIR $TEST_RUNNER_PORT_MIN\"",
+                30,
+                "[test]",
+                never_cancelled(),
+            )
+            .await;
             assert!(execution.success);
             let reported = execution.stdout.trim().to_string();
             assert!(
