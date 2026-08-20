@@ -62,6 +62,7 @@ pub struct MutantRow {
     pub id: i64,
     pub diff: String,
     pub file_path: Option<String>,
+    pub status: String,
 }
 
 pub struct Database {
@@ -179,13 +180,14 @@ impl Database {
                 id: row.get(0)?,
                 diff: row.get(1)?,
                 file_path: row.get(2)?,
+                status: row.get(3)?,
             })
         };
 
         let rows: Vec<MutantRow> = match (file_path, survivors_only) {
             (Some(fp), false) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants \
+                    "SELECT id, diff, file_path, status FROM mutants \
                      WHERE run_id = ?1 AND file_path = ?2 ORDER BY id",
                 )?;
                 let rows = stmt
@@ -195,7 +197,7 @@ impl Database {
             }
             (Some(fp), true) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants \
+                    "SELECT id, diff, file_path, status FROM mutants \
                      WHERE run_id = ?1 AND file_path = ?2 AND status = 'survived' ORDER BY id",
                 )?;
                 let rows = stmt
@@ -205,7 +207,7 @@ impl Database {
             }
             (None, false) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1 ORDER BY id",
+                    "SELECT id, diff, file_path, status FROM mutants WHERE run_id = ?1 ORDER BY id",
                 )?;
                 let rows = stmt
                     .query_map(params![run_id], map_row)?
@@ -214,7 +216,7 @@ impl Database {
             }
             (None, true) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants \
+                    "SELECT id, diff, file_path, status FROM mutants \
                      WHERE run_id = ?1 AND status = 'survived' ORDER BY id",
                 )?;
                 let rows = stmt

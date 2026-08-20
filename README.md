@@ -204,6 +204,18 @@ corpus commands keep working without copying the corpus. Fresh worktrees do not
 contain an existing build, so provide `--setup-command` unless the test command
 configures the build itself.
 
+Every 60 seconds a running command reports that it is still alive, together
+with its most recent line of output:
+
+```
+[worker 0][3/40][mutant 53] still running, 12m03s elapsed (last output: [ 45%] Building CXX object ...)
+```
+
+This distinguishes a long build from a stalled one, since a command's own
+output is only printed once it finishes. When a command hits its timeout, the
+whole process tree it started is terminated, so a leftover build or `bitcoind`
+node cannot hold ports and datadirs that later mutants would trip over.
+
 Workers run the same command at the same time, so each one also gets a private
 temporary directory (`TMPDIR`, `TMP` and `TEMP`) and its own Bitcoin Core
 functional test port range (`TEST_RUNNER_PORT_MIN`). Without them, concurrent
