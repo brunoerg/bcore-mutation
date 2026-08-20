@@ -7,10 +7,70 @@ use std::process::Command;
 use tempfile::TempDir;
 use tokio::process::Command as TokioCommand;
 
+/// Lowest port Bitcoin Core's functional test framework hands out.
+///
+/// Mirrors `PORT_MIN` in `test/functional/test_framework/util.py`.
+const FUNCTIONAL_PORT_MIN: u32 = 11_000;
+
+/// Ports a single functional test runner may occupy.
+///
+/// The framework reserves `PORT_RANGE` ports each for p2p, RPC and Tor, so one
+/// runner spans three consecutive ranges above its port floor.
+const FUNCTIONAL_PORT_SPAN: u32 = 15_000;
+
+/// Highest port a worker may be given a disjoint range below.
+const MAX_PORT: u32 = 65_535;
+
 #[derive(Clone, Debug)]
 pub struct WorkerWorkspace {
     pub id: usize,
     pub path: PathBuf,
+    /// Private temporary directory exported to commands run in this worker.
+    ///
+    /// Workers execute the same command at the same time, so tools that derive
+    /// scratch paths from wall-clock time collide in a shared system temporary
+    /// directory. Bitcoin Core's `test_runner.py` is one of them: it creates
+    /// `test_runner_<timestamp>` with second granularity and no `exist_ok`.
+    pub temp_dir: PathBuf,
+    /// Port floor for Bitcoin Core functional tests, when one is available.
+    ///
+    /// Functional test ports are derived from the test index rather than the
+    /// process, so concurrent workers running the same test list would bind the
+    /// same ports without a per-worker floor.
+    pub port_floor: Option<u32>,
+}
+
+impl WorkerWorkspace {
+    /// Environment overrides that keep concurrent workers from colliding.
+    pub fn environment(&self) -> Vec<(&'static str, String)> {
+        let temp_dir = self.temp_dir.display().to_string();
+        let mut environment = vec![
+            ("TMPDIR", temp_dir.clone()),
+            ("TMP", temp_dir.clone()),
+            ("TEMP", temp_dir),
+        ];
+        if let Some(floor) = self.port_floor {
+            environment.push(("TEST_RUNNER_PORT_MIN", floor.to_string()));
+        }
+        environment
+    }
+}
+
+/// Port floor for `worker_id`, or `None` when the port space is exhausted.
+fn port_floor_for(worker_id: usize) -> Option<u32> {
+    let offset = u32::try_from(worker_id)
+        .ok()?
+        .checked_mul(FUNCTIONAL_PORT_SPAN)?;
+    let floor = FUNCTIONAL_PORT_MIN.checked_add(offset)?;
+    let highest = floor.checked_add(FUNCTIONAL_PORT_SPAN - 1)?;
+    (highest <= MAX_PORT).then_some(floor)
+}
+
+/// Number of workers that can be given non-overlapping functional test ports.
+fn workers_with_disjoint_ports() -> usize {
+    (0usize..)
+        .take_while(|id| port_floor_for(*id).is_some())
+        .count()
 }
 
 /// Owns the temporary Git worktrees created for one parallel analysis run.
@@ -51,13 +111,27 @@ impl WorktreePool {
             cleaned: false,
         };
 
+        let disjoint_port_workers = workers_with_disjoint_ports();
+        if worker_count > disjoint_port_workers {
+            eprintln!(
+                "Warning: only {disjoint_port_workers} of {worker_count} workers get a private \
+                 Bitcoin Core functional test port range; the remaining workers reuse the default \
+                 range and may fail to bind if the test command runs functional tests"
+            );
+        }
+
         for id in 0..worker_count {
-            let path = pool
+            let temporary_root = pool
                 .temporary_root
                 .as_ref()
                 .expect("temporary root exists while creating worktrees")
                 .path()
-                .join(format!("worker-{id}"));
+                .to_path_buf();
+            let path = temporary_root.join(format!("worker-{id}"));
+            // Kept short: functional tests place Unix sockets under this path,
+            // and those are limited to about 100 bytes.
+            let temp_dir = temporary_root.join(format!("tmp-{id}"));
+            std::fs::create_dir_all(&temp_dir)?;
 
             let add_worktree = TokioCommand::new("git")
                 .current_dir(&pool.repository_root)
@@ -97,7 +171,12 @@ impl WorktreePool {
                 )));
             }
 
-            pool.workspaces.push(WorkerWorkspace { id, path });
+            pool.workspaces.push(WorkerWorkspace {
+                id,
+                path,
+                temp_dir,
+                port_floor: port_floor_for(id),
+            });
         }
 
         Ok(pool)
@@ -353,6 +432,49 @@ fn symlink_path(source: &Path, destination: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workers_receive_disjoint_functional_test_port_ranges() {
+        let first = port_floor_for(0).unwrap();
+        let second = port_floor_for(1).unwrap();
+
+        assert_eq!(first, FUNCTIONAL_PORT_MIN);
+        assert_eq!(second - first, FUNCTIONAL_PORT_SPAN);
+        assert!(port_floor_for(workers_with_disjoint_ports()).is_none());
+        assert!(
+            port_floor_for(workers_with_disjoint_ports() - 1).unwrap() + FUNCTIONAL_PORT_SPAN - 1
+                <= MAX_PORT
+        );
+    }
+
+    #[test]
+    fn environment_isolates_temporary_directories_per_worker() {
+        let workspace = WorkerWorkspace {
+            id: 1,
+            path: PathBuf::from("/workers/worker-1"),
+            temp_dir: PathBuf::from("/workers/tmp-1"),
+            port_floor: Some(26_000),
+        };
+        let environment = workspace.environment();
+
+        for key in ["TMPDIR", "TMP", "TEMP"] {
+            let value = environment
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value.as_str());
+            assert_eq!(value, Some("/workers/tmp-1"));
+        }
+        assert!(environment.contains(&("TEST_RUNNER_PORT_MIN", "26000".to_string())));
+
+        let without_ports = WorkerWorkspace {
+            port_floor: None,
+            ..workspace
+        };
+        assert!(without_ports
+            .environment()
+            .iter()
+            .all(|(name, _)| *name != "TEST_RUNNER_PORT_MIN"));
+    }
 
     #[test]
     fn sibling_references_are_extracted_from_shell_commands() {

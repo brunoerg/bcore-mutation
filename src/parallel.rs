@@ -140,9 +140,16 @@ pub async fn analyze_database(
 
     let analysis_result = async {
         if let Some(setup) = setup_command {
-            run_checked_on_all(pool.workspaces(), setup, setup_timeout_secs, "setup").await?;
+            run_checked_on_all(pool.workspaces(), setup, setup_timeout_secs, "setup", true).await?;
         }
-        run_checked_on_all(pool.workspaces(), command, timeout_secs, "baseline").await?;
+        run_checked_on_all(
+            pool.workspaces(),
+            command,
+            timeout_secs,
+            "baseline",
+            setup_command.is_some(),
+        )
+        .await?;
 
         let jobs = mutants
             .into_iter()
@@ -283,6 +290,7 @@ pub async fn analyze_folders(
                 setup,
                 project_commands.build_timeout_secs(),
                 "setup",
+                true,
             )
             .await?;
         }
@@ -292,8 +300,14 @@ pub async fn analyze_folders(
 
         for plan in plans {
             if checked_commands.insert(plan.command.clone()) {
-                run_checked_on_all(pool.workspaces(), &plan.command, timeout_secs, "baseline")
-                    .await?;
+                run_checked_on_all(
+                    pool.workspaces(),
+                    &plan.command,
+                    timeout_secs,
+                    "baseline",
+                    setup.is_some(),
+                )
+                .await?;
             }
 
             let total = plan.jobs.len();
@@ -549,6 +563,7 @@ async fn run_checked_on_all(
     command: &str,
     timeout_secs: u64,
     phase: &str,
+    setup_provided: bool,
 ) -> Result<()> {
     println!(
         "Running {phase} command in {} worker workspace(s)...",
@@ -558,7 +573,7 @@ async fn run_checked_on_all(
     let command_runs = join_all(workspaces.iter().map(|workspace| async move {
         (
             workspace.id,
-            capture_command(&workspace.path, command, timeout_secs).await,
+            capture_command(workspace, command, timeout_secs).await,
         )
     }));
     let executions = tokio::select! {
@@ -581,19 +596,87 @@ async fn run_checked_on_all(
             &execution,
         );
         if !execution.success {
-            let setup_hint = if phase == "baseline" {
-                " A fresh parallel worktree has no existing build directory; use \
-                 --setup-command if the test command does not configure it."
-            } else {
-                ""
-            };
-            return Err(MutationError::InvalidInput(format!(
-                "{phase} command failed in worker {worker_id}.{setup_hint}"
+            return Err(MutationError::InvalidInput(checked_failure_message(
+                phase,
+                worker_id,
+                setup_provided,
+                &execution,
+                timeout_secs,
             )));
         }
     }
 
     Ok(())
+}
+
+/// Number of trailing output lines quoted when a checked command fails.
+const FAILURE_TAIL_LINES: usize = 3;
+
+/// Maximum characters of quoted output in a failure message.
+const FAILURE_TAIL_CHARS: usize = 400;
+
+fn checked_failure_message(
+    phase: &str,
+    worker_id: usize,
+    setup_provided: bool,
+    execution: &CommandExecution,
+    timeout_secs: u64,
+) -> String {
+    // The build directory hint only helps when no setup command ran; repeating
+    // it otherwise hides the real failure, which is printed far above.
+    let setup_hint = if phase == "baseline" && !setup_provided {
+        " A fresh parallel worktree has no existing build directory; use \
+         --setup-command if the test command does not configure it."
+    } else {
+        ""
+    };
+    format!(
+        "{phase} command failed in worker {worker_id} ({}).{setup_hint}",
+        failure_reason(execution, timeout_secs)
+    )
+}
+
+fn failure_reason(execution: &CommandExecution, timeout_secs: u64) -> String {
+    if execution.timed_out {
+        return format!("timed out after {timeout_secs}s");
+    }
+    if let Some(error) = &execution.spawn_error {
+        return format!("could not be started: {error}");
+    }
+
+    let exit_code = execution.exit_code.unwrap_or(-1);
+    match output_tail(execution) {
+        Some(tail) => format!("exit code {exit_code}; last output: {tail}"),
+        None => format!("exit code {exit_code}"),
+    }
+}
+
+fn output_tail(execution: &CommandExecution) -> Option<String> {
+    for stream in [&execution.stderr, &execution.stdout] {
+        let lines = stream
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            continue;
+        }
+
+        let start = lines.len().saturating_sub(FAILURE_TAIL_LINES);
+        let tail = lines[start..].join(" | ");
+        let length = tail.chars().count();
+        return Some(if length > FAILURE_TAIL_CHARS {
+            format!(
+                "...{}",
+                tail.chars()
+                    .skip(length - FAILURE_TAIL_CHARS)
+                    .collect::<String>()
+            )
+        } else {
+            tail
+        });
+    }
+    None
 }
 
 async fn execute_parallel_jobs<OnDispatch, OnResult>(
@@ -838,7 +921,7 @@ async fn execute_mutant(
         return error_result(workspace.id, job, detail, usable);
     }
 
-    let execution = capture_command(&workspace.path, &job.command, timeout_secs).await;
+    let execution = capture_command(workspace, &job.command, timeout_secs).await;
     let status = if execution.success {
         MutantStatus::Survived
     } else {
@@ -924,7 +1007,11 @@ async fn restore_file(workspace: &Path, target_file: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn capture_command(workspace: &Path, command: &str, timeout_secs: u64) -> CommandExecution {
+async fn capture_command(
+    workspace: &WorkerWorkspace,
+    command: &str,
+    timeout_secs: u64,
+) -> CommandExecution {
     let (shell, shell_arg) = if cfg!(target_os = "windows") {
         ("cmd", "/C")
     } else {
@@ -933,7 +1020,8 @@ async fn capture_command(workspace: &Path, command: &str, timeout_secs: u64) -> 
 
     let mut child = TokioCommand::new(shell);
     child
-        .current_dir(workspace)
+        .current_dir(&workspace.path)
+        .envs(workspace.environment())
         .arg(shell_arg)
         .arg(command)
         .stdout(Stdio::piped())
@@ -1035,6 +1123,98 @@ mod tests {
         assert!(validate_target_path("../example.cpp").is_err());
         assert!(validate_target_path("/tmp/example.cpp").is_err());
         assert!(validate_target_path("").is_err());
+    }
+
+    #[test]
+    fn baseline_failure_only_suggests_setup_when_none_was_provided() {
+        let execution = CommandExecution {
+            success: false,
+            exit_code: Some(1),
+            stdout: "*** No errors detected\n".to_string(),
+            stderr: "FileExistsError: [Errno 17] File exists: '/tmp/test_runner_x'\n".to_string(),
+            timed_out: false,
+            spawn_error: None,
+        };
+
+        let without_setup = checked_failure_message("baseline", 0, false, &execution, 60);
+        assert!(without_setup.contains("--setup-command"));
+
+        let with_setup = checked_failure_message("baseline", 0, true, &execution, 60);
+        assert!(!with_setup.contains("--setup-command"));
+        assert!(with_setup.contains("exit code 1"));
+        assert!(with_setup.contains("FileExistsError"));
+    }
+
+    #[test]
+    fn failure_reason_prefers_stderr_and_reports_timeouts() {
+        let timed_out = CommandExecution {
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
+            spawn_error: None,
+        };
+        assert_eq!(failure_reason(&timed_out, 90), "timed out after 90s");
+
+        let stdout_only = CommandExecution {
+            success: false,
+            exit_code: Some(2),
+            stdout: "first\n\nlast\n".to_string(),
+            stderr: "   \n".to_string(),
+            timed_out: false,
+            spawn_error: None,
+        };
+        assert_eq!(
+            failure_reason(&stdout_only, 90),
+            "exit code 2; last output: first | last"
+        );
+    }
+
+    #[tokio::test]
+    async fn workers_get_private_temporary_directories_and_port_ranges() {
+        let repository = initialized_repository();
+        let base = workspace::head_commit(repository.path()).await.unwrap();
+        let mut pool = WorktreePool::create(repository.path().to_path_buf(), &base, 2, false)
+            .await
+            .unwrap();
+
+        let mut observed = Vec::new();
+        for workspace in pool.workspaces() {
+            let execution =
+                capture_command(workspace, "echo \"$TMPDIR $TEST_RUNNER_PORT_MIN\"", 30).await;
+            assert!(execution.success);
+            let reported = execution.stdout.trim().to_string();
+            assert!(
+                reported.starts_with(&workspace.temp_dir.display().to_string()),
+                "worker {} reported {reported}",
+                workspace.id
+            );
+            assert!(workspace.temp_dir.is_dir());
+            observed.push(reported);
+        }
+
+        assert_ne!(observed[0], observed[1]);
+        pool.cleanup().await.unwrap();
+    }
+
+    /// Reproduces the reported baseline failure: Bitcoin Core's `test_runner.py`
+    /// creates `<tmpdir>/test_runner_<timestamp>` with second granularity and no
+    /// `exist_ok`, so workers starting together collided in a shared `/tmp`.
+    #[tokio::test]
+    async fn concurrent_workers_do_not_collide_on_timestamped_temporary_directories() {
+        let repository = initialized_repository();
+        let base = workspace::head_commit(repository.path()).await.unwrap();
+        let mut pool = WorktreePool::create(repository.path().to_path_buf(), &base, 4, false)
+            .await
+            .unwrap();
+
+        let command = "mkdir \"${TMPDIR:-/tmp}/test_runner_$(date +%Y%m%d_%H%M%S)\"";
+        run_checked_on_all(pool.workspaces(), command, 30, "baseline", true)
+            .await
+            .unwrap();
+
+        pool.cleanup().await.unwrap();
     }
 
     #[tokio::test]

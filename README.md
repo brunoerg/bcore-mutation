@@ -204,6 +204,18 @@ corpus commands keep working without copying the corpus. Fresh worktrees do not
 contain an existing build, so provide `--setup-command` unless the test command
 configures the build itself.
 
+Workers run the same command at the same time, so each one also gets a private
+temporary directory (`TMPDIR`, `TMP` and `TEMP`) and its own Bitcoin Core
+functional test port range (`TEST_RUNNER_PORT_MIN`). Without them, concurrent
+runs of `test/functional/test_runner.py` collide: it names its scratch directory
+after a timestamp with second granularity, and it derives ports from the test
+index rather than the process.
+
+The functional test framework reserves 15000 ports per runner, so only three
+workers fit below the maximum port number. `--parallel 4` or higher prints a
+warning and lets the remaining workers fall back to the default range, which is
+safe for unit or fuzz test commands but not for functional tests.
+
 `--parallel` controls concurrent mutants while `--jobs` controls parallel jobs
 inside each build. For example, `--parallel 3 --jobs 4` can run approximately
 12 compiler jobs and also requires disk space for three build trees.
