@@ -17,6 +17,7 @@ const SECP256K1_SKIP_PREFIXES: &[&str] = &[
     "ARG_CHECK",
     "ARG_CHECK_VOID",
     "CHECK",
+    "SECP256K1_ARG_NONNULL",
     "secp256k1_fe_verify",
     "secp256k1_ge_verify",
     "secp256k1_gej_verify",
