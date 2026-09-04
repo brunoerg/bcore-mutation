@@ -44,9 +44,6 @@ pub async fn generate_report(
         }
     }
 
-    // Restore original file
-    restore_original_file(&original_file_path).await?;
-
     println!("Surviving mutants:");
 
     let mut diffs = Vec::new();
@@ -79,26 +76,9 @@ pub async fn generate_report(
     Ok(())
 }
 
-async fn restore_original_file(file_path: &str) -> Result<()> {
-    let output = Command::new("git")
-        .args(&["checkout", "--", file_path])
-        .output()
-        .map_err(|e| MutationError::Git(format!("Failed to restore file: {}", e)))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(MutationError::Git(format!(
-            "Git checkout failed: {}",
-            stderr
-        )));
-    }
-
-    Ok(())
-}
-
 async fn get_git_diff(original_file: &str, modified_file: &str) -> Result<String> {
     let output = Command::new("git")
-        .args(&["diff", "--no-index", original_file, modified_file])
+        .args(["diff", "--no-index", original_file, modified_file])
         .output()
         .map_err(|e| MutationError::Git(format!("Failed to get git diff: {}", e)))?;
 
@@ -142,7 +122,7 @@ async fn parse_diffs_to_json(diffs_list: &[String]) -> Result<HashMap<String, Ve
 
 async fn get_git_hash() -> Result<String> {
     let output = Command::new("git")
-        .args(&["log", "--pretty=format:%h", "-n", "1"])
+        .args(["log", "--pretty=format:%h", "-n", "1"])
         .output()
         .map_err(|e| MutationError::Git(format!("Failed to get git hash: {}", e)))?;
 

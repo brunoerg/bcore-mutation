@@ -1,6 +1,7 @@
 use crate::commands::{self, ProjectCommands};
 use crate::db::Database;
 use crate::error::{MutationError, Result};
+use crate::parallel;
 use crate::project::Project;
 use crate::report::generate_report;
 use std::fs;
@@ -17,6 +18,24 @@ use walkdir::WalkDir;
 pub struct ScoreSummary {
     pub killed: u64,
     pub total: u64,
+}
+
+/// Complete configuration for an analysis run.
+pub struct AnalysisOptions {
+    pub project: Project,
+    pub folder: Option<PathBuf>,
+    pub command: Option<String>,
+    pub setup_command: Option<String>,
+    pub jobs: u32,
+    pub parallel: usize,
+    pub timeout_secs: u64,
+    pub survival_threshold: f64,
+    pub min_score: Option<f64>,
+    pub sqlite_path: Option<PathBuf>,
+    pub run_id: Option<i64>,
+    pub file_path: Option<String>,
+    pub survivors_only: bool,
+    pub keep_worktrees: bool,
 }
 
 impl ScoreSummary {
@@ -66,6 +85,7 @@ fn enforce_min_score(summary: ScoreSummary, min_score: Option<f64>) -> Result<()
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments, dead_code)]
 pub async fn run_analysis(
     project: Project,
     folder: Option<PathBuf>,
@@ -79,10 +99,54 @@ pub async fn run_analysis(
     file_path: Option<String>,
     survivors_only: bool,
 ) -> Result<()> {
+    run_analysis_with_options(AnalysisOptions {
+        project,
+        folder,
+        command,
+        setup_command: None,
+        jobs,
+        parallel: 1,
+        timeout_secs,
+        survival_threshold,
+        min_score,
+        sqlite_path,
+        run_id,
+        file_path,
+        survivors_only,
+        keep_worktrees: false,
+    })
+    .await
+}
+
+pub async fn run_analysis_with_options(options: AnalysisOptions) -> Result<()> {
+    let AnalysisOptions {
+        project,
+        folder,
+        command,
+        setup_command,
+        jobs,
+        parallel,
+        timeout_secs,
+        survival_threshold,
+        min_score,
+        sqlite_path,
+        run_id,
+        file_path,
+        survivors_only,
+        keep_worktrees,
+    } = options;
+
+    if parallel == 0 {
+        return Err(MutationError::InvalidInput(
+            "--parallel must be at least 1".to_string(),
+        ));
+    }
+
     println!("Analyzing mutants for project: {}", project.db_name());
+    let project_commands = commands::for_project(project);
 
     // DB-based analysis mode: read mutants from DB and test them.
-    if let (Some(ref path), Some(rid)) = (sqlite_path.as_ref(), run_id) {
+    if let (Some(path), Some(rid)) = (sqlite_path.as_ref(), run_id) {
         let command = command.ok_or_else(|| {
             MutationError::InvalidInput(
                 "--command is required when using --sqlite with --run_id".to_string(),
@@ -91,15 +155,37 @@ pub async fn run_analysis(
         let db = Database::open(path)?;
         db.ensure_schema()?;
         db.seed_projects()?;
-        let summary = run_db_analysis(
-            &db,
-            rid,
-            &command,
-            timeout_secs,
-            file_path.as_deref(),
-            survivors_only,
-        )
-        .await?;
+        let summary = if parallel > 1 {
+            parallel::analyze_database(
+                &db,
+                rid,
+                &command,
+                setup_command.as_deref(),
+                project_commands.build_timeout_secs(),
+                timeout_secs,
+                file_path.as_deref(),
+                survivors_only,
+                parallel,
+                keep_worktrees,
+            )
+            .await?
+        } else {
+            if let Some(setup) = setup_command.as_deref() {
+                let success = run_command(setup, project_commands.build_timeout_secs()).await?;
+                if !success {
+                    return Err(MutationError::Command("Setup command failed".to_string()));
+                }
+            }
+            run_db_analysis(
+                &db,
+                rid,
+                &command,
+                timeout_secs,
+                file_path.as_deref(),
+                survivors_only,
+            )
+            .await?
+        };
         return enforce_min_score(summary, min_score);
     }
 
@@ -111,12 +197,31 @@ pub async fn run_analysis(
         find_mutation_folders()?
     };
 
-    let project_commands = commands::for_project(project);
+    if parallel > 1 {
+        let summary = parallel::analyze_folders(
+            folders,
+            command,
+            setup_command,
+            jobs,
+            timeout_secs,
+            survival_threshold,
+            parallel,
+            keep_worktrees,
+            project_commands.as_ref(),
+        )
+        .await?;
+        return enforce_min_score(summary, min_score);
+    }
 
     // When we derive the test command ourselves (no --command), do the one-time
     // clean build up front rather than once per folder. Each mutant still
     // triggers an incremental rebuild inside its test command.
-    if command.is_none() && !folders.is_empty() {
+    if let Some(setup) = setup_command.as_deref() {
+        let success = run_command(setup, project_commands.build_timeout_secs()).await?;
+        if !success {
+            return Err(MutationError::Command("Setup command failed".to_string()));
+        }
+    } else if command.is_none() && !folders.is_empty() {
         run_build_command(project_commands.as_ref()).await?;
     }
 
@@ -307,7 +412,7 @@ pub async fn analyze_folder(
     let test_command = if let Some(cmd) = command {
         cmd
     } else {
-        project_commands.test_command(&target_file_path, jobs)?
+        project_commands.test_command(target_file_path, jobs)?
     };
 
     // Get list of mutant files
@@ -315,7 +420,7 @@ pub async fn analyze_folder(
     for entry in fs::read_dir(folder_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() && !path.extension().map_or(true, |ext| ext == "txt") {
+        if path.is_file() && path.extension().is_some_and(|ext| ext != "txt") {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 mutant_files.push(name.to_string());
             }
@@ -353,7 +458,7 @@ pub async fn analyze_folder(
 
         // Read and apply mutant
         let mutant_content = fs::read_to_string(&file_path)?;
-        fs::write(&target_file_path, &mutant_content)?;
+        fs::write(target_file_path, &mutant_content)?;
 
         //println!("Running: {}", test_command);
         let result = run_command(&test_command, timeout_secs).await?;
@@ -367,6 +472,9 @@ pub async fn analyze_folder(
         }
     }
 
+    // Restore the original file before generating diffs for the report.
+    restore_file(target_file_path).await?;
+
     // Generate report
     let score = num_killed as f64 / total_mutants as f64;
     println!("\nMUTATION SCORE: {:.2}%", score * 100.0);
@@ -374,13 +482,10 @@ pub async fn analyze_folder(
     generate_report(
         &not_killed,
         folder_path.to_str().unwrap(),
-        &target_file_path,
+        target_file_path,
         score,
     )
     .await?;
-
-    // Restore the original file
-    restore_file(&target_file_path).await?;
 
     Ok(ScoreSummary {
         killed: num_killed,
@@ -439,7 +544,6 @@ async fn run_command(command: &str, timeout_secs: u64) -> Result<bool> {
 
 /// Run the test command once against **unmutated** code before analyzing any
 /// mutants. If it does not pass, abort the whole run with an error.
-
 async fn check_baseline(command: &str, timeout_secs: u64) -> Result<()> {
     println!("Baseline check: running the test command on unmutated code...");
     let passed = run_command(command, timeout_secs).await?;
@@ -562,9 +666,8 @@ mod tests {
         assert!(check_baseline("true", 5).await.is_ok());
 
         // Test a command that fails on unmutated code aborts the run.
-        let result= check_baseline("exit 200", 5).await;
+        let result = check_baseline("exit 200", 5).await;
         assert!(matches!(result, Err(MutationError::InvalidInput(_))));
-
     }
 
     #[test]
