@@ -26,6 +26,11 @@ impl OperatorSet for BitcoinCore {
             ("std::max", "std::min"),
             ("std::begin", "std::end"),
             ("std::end", "std::begin"),
+            // Block-time source swap: `GetBlockTime()` -> `GetMedianTimePast()`.
+            // Both live on CBlockIndex and return int64_t, but MTP lags the
+            // header timestamp, so locktime/timeout checks that pick the
+            // wrong clock only get caught by tests around that boundary.
+            (r"\bGetBlockTime\(\)", "GetMedianTimePast()"),
             ("true", "false"),
             ("false", "true"),
             // Designated-initializer / member-assignment value mutation: for
@@ -37,6 +42,12 @@ impl OperatorSet for BitcoinCore {
             // `true`/`false`.
             (r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}true${3}"),
             (r"(\.\w+\s*=\s*)([^,;=][^,;]*?)(\s*[,;])", r"${1}false${3}"),
+            // Integer type narrowing: `int64_t` -> `uint32_t`. Silently
+            // truncates values above 2^32 and turns negatives into large
+            // positives, so a mutant only dies when a test actually exercises
+            // the wide or signed range. Word boundaries keep `uint64_t`
+            // untouched. Mirrors the entry in `common`.
+            (r"\bint64_t\b", "uint32_t"),
             (r" / ", " * "),
             // Boundary (off-by-one) mutations first — hardest to kill
             (r" >= ", " > "),
@@ -289,5 +300,49 @@ mod tests {
         // Would previously match, treating `==` as `=` and corrupting the
         // comparison into an assignment (`state.m_count =true;`).
         assert!(!op.pattern.is_match("bool ok = state.m_count == 5;"));
+    }
+
+    fn find_op(needle: &str) -> MutationOperator {
+        BitcoinCore
+            .regex_operators()
+            .unwrap()
+            .into_iter()
+            .find(|op| op.pattern.as_str().contains(needle))
+            .unwrap_or_else(|| panic!("operator containing {needle:?} present"))
+    }
+
+    #[test]
+    fn test_get_block_time_becomes_median_time_past() {
+        let op = find_op("GetBlockTime");
+        let line = "    if (pindex->GetBlockTime() < nLockTime) return false;";
+        assert!(op.pattern.is_match(line));
+        assert_eq!(
+            op.pattern.replace(line, &op.replacement),
+            "    if (pindex->GetMedianTimePast() < nLockTime) return false;"
+        );
+        assert_eq!(
+            op.pattern
+                .replace("int64_t t = tip.GetBlockTime();", &op.replacement),
+            "int64_t t = tip.GetMedianTimePast();"
+        );
+    }
+
+    #[test]
+    fn test_get_block_time_swap_ignores_lookalikes() {
+        let op = find_op("GetBlockTime");
+        assert!(!op.pattern.is_match("    pindex->GetBlockTimeMax();"));
+        assert!(!op.pattern.is_match("    block.SetBlockTime(now);"));
+        assert!(!op.pattern.is_match("    int64_t GetBlockTime(int height);"));
+    }
+
+    #[test]
+    fn test_int64_narrowing_is_present_in_bitcoin_core_set() {
+        let op = find_op("int64_t");
+        assert_eq!(
+            op.pattern
+                .replace("    int64_t nTime = GetTime();", &op.replacement),
+            "    uint32_t nTime = GetTime();"
+        );
+        assert!(!op.pattern.is_match("    uint64_t x = 0;"));
     }
 }
