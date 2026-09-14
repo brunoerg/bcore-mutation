@@ -57,6 +57,14 @@ pub(crate) fn regex_operators() -> Vec<(&'static str, &'static str)> {
         (r"^.*if\s*\(.*\)\s*continue;.*$", ""),
         (r"^.*if\s*\(.*\)\s*return;.*$", ""),
         (r"^.*if\s*\(.*\)\s*return.*;.*$", ""),
+        // Nested early-return deletion: delete a standalone `return ...;`
+        // that sits at least two indentation levels deep, i.e. inside an
+        // `if`/loop body rather than at function scope. The enclosing loop or
+        // function then carries on past the failure handling, which the
+        // single-line `if (...) return ...;` deletions above do not cover when
+        // the block spans several lines. Function-scope returns are left alone
+        // since deleting them mostly yields fall-off-the-end noise.
+        (r"^\s{8,}return\b[^;]*;\s*$", ""),
         (r"^(.*for\s*\(.*;.*;.*\)\s*\{.*)$", r"$1break;"),
         (r"^(.*while\s*\(.*\)\s*\{.*)$", r"$1break;"),
     ]
@@ -91,4 +99,36 @@ pub(crate) fn test_operators() -> Vec<(&'static str, &'static str)> {
 /// project. Project modules extend this with their own guard macros.
 pub(crate) fn do_not_mutate_patterns() -> Vec<&'static str> {
     vec!["/", "//", "#", "*", "/*", "assert"]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested_return_deletion_op() -> regex::Regex {
+        let (pattern, replacement) = regex_operators()
+            .into_iter()
+            .find(|(pattern, _)| pattern.contains("return\\b"))
+            .expect("nested return deletion operator present");
+        assert_eq!(replacement, "");
+        regex::Regex::new(pattern).unwrap()
+    }
+
+    #[test]
+    fn nested_return_deletion_matches_returns_inside_blocks() {
+        let re = nested_return_deletion_op();
+        assert!(re.is_match("            return 0;"));
+        assert!(re.is_match("        return secp256k1_fe_is_odd(&y);"));
+        assert!(re.is_match("\t\t\t\t\t\t\t\treturn false;"));
+    }
+
+    #[test]
+    fn nested_return_deletion_ignores_function_scope_and_lookalikes() {
+        let re = nested_return_deletion_op();
+        assert!(!re.is_match("    return ret;"));
+        assert!(!re.is_match("return 0;"));
+        assert!(!re.is_match("        if (!ret) return 0;"));
+        assert!(!re.is_match("        returned = 1;"));
+        assert!(!re.is_match("        return_code = f();"));
+    }
 }
