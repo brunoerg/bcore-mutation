@@ -31,6 +31,18 @@ impl OperatorSet for BitcoinCore {
             // header timestamp, so locktime/timeout checks that pick the
             // wrong clock only get caught by tests around that boundary.
             (r"\bGetBlockTime\(\)", "GetMedianTimePast()"),
+            // Chain-work threshold source swap: `minimum_chain_work` ->
+            // `m_chainman.MinimumChainWork()`. Catches code that uses a
+            // locally passed/stored threshold where the chainman's configured
+            // one is expected (or vice versa), which only shows up in tests
+            // that set a non-default `-minimumchainwork`. Member accesses
+            // (`opts.minimum_chain_work`, `m_options->minimum_chain_work`)
+            // are left alone since rewriting them can't compile; the regex
+            // crate has no lookbehind, so the preceding char is captured.
+            (
+                r"(^|[^\w.>:])minimum_chain_work\b",
+                "${1}m_chainman.MinimumChainWork()",
+            ),
             ("true", "false"),
             ("false", "true"),
             // Designated-initializer / member-assignment value mutation: for
@@ -333,6 +345,39 @@ mod tests {
         assert!(!op.pattern.is_match("    pindex->GetBlockTimeMax();"));
         assert!(!op.pattern.is_match("    block.SetBlockTime(now);"));
         assert!(!op.pattern.is_match("    int64_t GetBlockTime(int height);"));
+    }
+
+    #[test]
+    fn test_minimum_chain_work_becomes_chainman_minimum_chain_work() {
+        let op = find_op("minimum_chain_work");
+        assert_eq!(
+            op.pattern.replace(
+                "    if (work < minimum_chain_work) return false;",
+                &op.replacement
+            ),
+            "    if (work < m_chainman.MinimumChainWork()) return false;"
+        );
+        assert_eq!(
+            op.pattern.replace(
+                "HeadersSyncState(peer, params, chain_start, minimum_chain_work);",
+                &op.replacement
+            ),
+            "HeadersSyncState(peer, params, chain_start, m_chainman.MinimumChainWork());"
+        );
+        assert_eq!(
+            op.pattern.replace("minimum_chain_work)", &op.replacement),
+            "m_chainman.MinimumChainWork())"
+        );
+    }
+
+    #[test]
+    fn test_minimum_chain_work_swap_ignores_member_access_and_lookalikes() {
+        let op = find_op("minimum_chain_work");
+        assert!(!op.pattern.is_match("    opts.minimum_chain_work = work;"));
+        assert!(!op.pattern.is_match("    return *m_options->minimum_chain_work;"));
+        assert!(!op.pattern.is_match("    Options::minimum_chain_work;"));
+        assert!(!op.pattern.is_match("    m_minimum_chain_work = work;"));
+        assert!(!op.pattern.is_match("    minimum_chain_work_set = true;"));
     }
 
     #[test]
