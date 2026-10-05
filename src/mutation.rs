@@ -310,19 +310,27 @@ pub async fn mutate_file(
 
         let mut line_had_match = false;
 
+        // Only mutate the code part, never a trailing `//` comment
+        let (code, trailing_comment) = if file_to_mutate.contains(".py") {
+            (line_before_mutation, "")
+        } else {
+            split_trailing_comment(line_before_mutation)
+        };
+
         for operator in &operators {
             // Special handling for test operators
             if file_to_mutate.contains(".py") || is_unit_test {
-                if !operator_set.should_mutate_test_line(line_before_mutation) {
+                if !operator_set.should_mutate_test_line(code) {
                     continue;
                 }
             }
 
-            if operator.pattern.is_match(line_before_mutation) {
+            if operator.pattern.is_match(code) {
                 line_had_match = true;
-                let line_mutated = operator
-                    .pattern
-                    .replace(line_before_mutation, &operator.replacement);
+                let line_mutated = reattach_trailing_comment(
+                    &operator.pattern.replace(code, &operator.replacement),
+                    trailing_comment,
+                );
 
                 // Create mutated file content
                 let mut mutated_lines = lines.clone();
@@ -388,6 +396,49 @@ pub async fn mutate_file(
 
     println!("Generated {} mutants...", mutant_count);
     Ok(collected)
+}
+
+/// Split a C/C++ line into its code and a trailing `//` comment.
+/// `//` inside string or character literals is ignored.
+fn split_trailing_comment(line: &str) -> (&str, &str) {
+    let bytes = line.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match quote {
+            Some(q) => {
+                if b == b'\\' {
+                    i += 1; // skip the escaped character
+                } else if b == q {
+                    quote = None;
+                }
+            }
+            None => {
+                // A `'` right after a hex digit is a C++14 digit separator
+                // (`10'000`), not the start of a character literal.
+                let is_digit_separator = b == b'\'' && i > 0 && bytes[i - 1].is_ascii_hexdigit();
+                if (b == b'"' || b == b'\'') && !is_digit_separator {
+                    quote = Some(b);
+                } else if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+                    let code = line[..i].trim_end();
+                    return (code, &line[code.len()..]);
+                }
+            }
+        }
+        i += 1;
+    }
+    (line, "")
+}
+
+/// Re-attach a trailing comment to a mutated code part.
+/// The comment is dropped when the operator deleted the whole statement.
+fn reattach_trailing_comment(mutated_code: &str, comment: &str) -> String {
+    if mutated_code.trim().is_empty() {
+        mutated_code.to_string()
+    } else {
+        format!("{}{}", mutated_code, comment)
+    }
 }
 
 fn should_skip_line(
@@ -554,6 +605,74 @@ mod tests {
         // Test normal lines that shouldn't be skipped
         assert!(!should_skip_line("int x = 5;", "test.cpp", false, ops).unwrap());
         assert!(!should_skip_line("return value;", "test.cpp", false, ops).unwrap());
+    }
+
+    #[test]
+    fn test_split_trailing_comment() {
+        // Test comment containing an operator keyword
+        assert_eq!(
+            split_trailing_comment(
+                "    RemoveBlockRequest(h, id); // Reset in case Misbehaving does not"
+            ),
+            (
+                "    RemoveBlockRequest(h, id);",
+                " // Reset in case Misbehaving does not"
+            )
+        );
+
+        // Test `//` inside string and char literals
+        assert_eq!(
+            split_trailing_comment(r#"    url = "https://x"; // c"#),
+            (r#"    url = "https://x";"#, " // c")
+        );
+        assert_eq!(
+            split_trailing_comment(r#"    s = "a\"//b"; c = '/';"#),
+            (r#"    s = "a\"//b"; c = '/';"#, "")
+        );
+
+        // Test digit separators
+        assert_eq!(
+            split_trailing_comment("    static constexpr size_t N{10'000}; // ten k"),
+            ("    static constexpr size_t N{10'000};", " // ten k")
+        );
+
+        // Test inline block comments
+        assert_eq!(
+            split_trailing_comment("    f(/*via_compact_block=*/true);"),
+            ("    f(/*via_compact_block=*/true);", "")
+        );
+
+        // Test line without a comment
+        assert_eq!(split_trailing_comment("int x = 5;"), ("int x = 5;", ""));
+    }
+
+    #[test]
+    fn test_reattach_trailing_comment() {
+        // Test deleted statement
+        assert_eq!(
+            reattach_trailing_comment("", " // Reset in-flight state"),
+            ""
+        );
+        assert_eq!(reattach_trailing_comment("    ", " // c"), "    ");
+
+        // Test kept statement
+        assert_eq!(
+            reattach_trailing_comment("    x = false;", " // set to true later"),
+            "    x = false; // set to true later"
+        );
+        assert_eq!(reattach_trailing_comment("int x = 5;", ""), "int x = 5;");
+    }
+
+    #[test]
+    fn test_unit_test_line_with_trailing_comment() {
+        let ops = operators::for_project(Project::BitcoinCore);
+        let ops = ops.as_ref();
+        let line = "    node.SyncWithValidationInterfaceQueue(); // flush callbacks";
+
+        // Test only the code part looks like a function call
+        assert!(!ops.should_mutate_test_line(line));
+        let (code, _) = split_trailing_comment(line);
+        assert!(ops.should_mutate_test_line(code));
     }
 
     #[test]

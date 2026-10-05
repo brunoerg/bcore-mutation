@@ -94,6 +94,10 @@ The system includes 100+ pre-defined rules based on common patterns:
 - Preprocessor: `^\s*#`
 - Namespace declarations: `^\s*namespace\s+`
 
+Trailing `//` comments on code lines are never mutated either: operators only
+match the code before the comment. The comment is re-attached unchanged, or
+dropped together with the statement when an operator deletes it.
+
 ## Custom Expert Rules
 
 Add your own patterns for project-specific arid code:
