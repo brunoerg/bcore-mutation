@@ -70,8 +70,8 @@ pub(crate) fn regex_operators() -> Vec<(&'static str, &'static str)> {
         // the block spans several lines. Function-scope returns are left alone
         // since deleting them mostly yields fall-off-the-end noise.
         (r"^\s{8,}return\b[^;]*;\s*$", ""),
-        (r"^(.*for\s*\(.*;.*;.*\)\s*\{.*)$", r"$1break;"),
-        (r"^(.*while\s*\(.*\)\s*\{.*)$", r"$1break;"),
+        (r"^(.*for\s*\(.*;.*;.*\)\s*\{.*)$", r"${1}break;"),
+        (r"^(.*while\s*\(.*\)\s*\{.*)$", r"${1}break;"),
     ]
 }
 
@@ -169,5 +169,28 @@ mod tests {
         assert!(!re.is_match("    int32_t x = 0;"));
         assert!(!re.is_match("    int64_tt x = 0;"));
         assert!(!re.is_match("    my_int64_t x = 0;"));
+    }
+
+    fn loop_break_op(needle: &str) -> (regex::Regex, &'static str) {
+        let (pattern, replacement) = regex_operators()
+            .into_iter()
+            .find(|(pattern, _)| pattern.starts_with(needle))
+            .expect("loop break operator present");
+        (regex::Regex::new(pattern).unwrap(), replacement)
+    }
+
+    #[test]
+    fn loop_break_keeps_loop_header() {
+        let (re, rep) = loop_break_op(r"^(.*for");
+        assert_eq!(
+            re.replace("    for (int i = 0; i < n; ++i) {", rep),
+            "    for (int i = 0; i < n; ++i) {break;"
+        );
+
+        let (re, rep) = loop_break_op(r"^(.*while");
+        assert_eq!(
+            re.replace("    while (i < n) {", rep),
+            "    while (i < n) {break;"
+        );
     }
 }
