@@ -82,8 +82,8 @@ impl OperatorSet for BitcoinCore {
             (r"^.*if\s*\(.*\)\s*continue;.*$", ""),
             (r"^.*if\s*\(.*\)\s*return;.*$", ""),
             (r"^.*if\s*\(.*\)\s*return.*;.*$", ""),
-            (r"^(.*for\s*\(.*;.*;.*\)\s*\{.*)$", r"$1break;"),
-            (r"^(.*while\s*\(.*\)\s*\{.*)$", r"$1break;"),
+            (r"^(.*for\s*\(.*;.*;.*\)\s*\{.*)$", r"${1}break;"),
+            (r"^(.*while\s*\(.*\)\s*\{.*)$", r"${1}break;"),
             /* Seems they're unproductive
             (
                 r"\b(int64_t|uint64_t|int32_t|uint32_t)\s+(\w+)\s*=\s*(.*?);$",
@@ -344,5 +344,22 @@ mod tests {
             "    uint32_t nTime = GetTime();"
         );
         assert!(!op.pattern.is_match("    uint64_t x = 0;"));
+    }
+
+    #[test]
+    fn test_loop_break_keeps_loop_header() {
+        let op = find_op(r"^(.*for");
+        assert_eq!(
+            op.pattern
+                .replace("    for (int i = 0; i < n; ++i) {", &op.replacement),
+            "    for (int i = 0; i < n; ++i) {break;"
+        );
+
+        let op = find_op(r"^(.*while");
+        assert_eq!(
+            op.pattern
+                .replace("    while (it != end) {", &op.replacement),
+            "    while (it != end) {break;"
+        );
     }
 }
