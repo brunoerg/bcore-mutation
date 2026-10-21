@@ -298,24 +298,21 @@ pub async fn mutate_file(
 
         let line_before_mutation = lines[line_idx];
 
-        // Check if line should be skipped (traditional approach)
-        if should_skip_line(
-            line_before_mutation,
-            file_to_mutate,
-            is_unit_test,
-            operator_set,
-        )? {
-            continue;
-        }
-
-        let mut line_had_match = false;
-
         // Only mutate the code part, never a trailing `//` comment
         let (code, trailing_comment) = if file_to_mutate.contains(".py") {
             (line_before_mutation, "")
         } else {
             split_trailing_comment(line_before_mutation)
         };
+
+        // Check if line should be skipped (traditional approach)
+        if code.trim().is_empty()
+            || should_skip_line(code, file_to_mutate, is_unit_test, operator_set)?
+        {
+            continue;
+        }
+
+        let mut line_had_match = false;
 
         for operator in &operators {
             // Special handling for test operators
@@ -673,6 +670,18 @@ mod tests {
         assert!(!ops.should_mutate_test_line(line));
         let (code, _) = split_trailing_comment(line);
         assert!(ops.should_mutate_test_line(code));
+    }
+
+    #[test]
+    fn test_should_skip_line_ignores_trailing_comment() {
+        let ops = operators::for_project(Project::BitcoinCore);
+        let ops = ops.as_ref();
+        let line = "    node.SyncWithValidationInterfaceQueue(); // set x = 1";
+
+        // Test the comment alone makes the whole line look like an assignment
+        assert!(should_skip_line(line, "test.cpp", true, ops).unwrap());
+        let (code, _) = split_trailing_comment(line);
+        assert!(!should_skip_line(code, "test.cpp", true, ops).unwrap());
     }
 
     #[test]
