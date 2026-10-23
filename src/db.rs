@@ -57,10 +57,12 @@ pub struct MutantData {
 }
 
 /// A mutant row read back from the database.
+#[derive(Clone, Debug)]
 pub struct MutantRow {
     pub id: i64,
     pub diff: String,
     pub file_path: Option<String>,
+    pub status: String,
 }
 
 pub struct Database {
@@ -178,13 +180,15 @@ impl Database {
                 id: row.get(0)?,
                 diff: row.get(1)?,
                 file_path: row.get(2)?,
+                status: row.get(3)?,
             })
         };
 
         let rows: Vec<MutantRow> = match (file_path, survivors_only) {
             (Some(fp), false) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants WHERE run_id = ?1 AND file_path = ?2",
+                    "SELECT id, diff, file_path, status FROM mutants \
+                     WHERE run_id = ?1 AND file_path = ?2 ORDER BY id",
                 )?;
                 let rows = stmt
                     .query_map(params![run_id, fp], map_row)?
@@ -193,8 +197,8 @@ impl Database {
             }
             (Some(fp), true) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants \
-                     WHERE run_id = ?1 AND file_path = ?2 AND status = 'survived'",
+                    "SELECT id, diff, file_path, status FROM mutants \
+                     WHERE run_id = ?1 AND file_path = ?2 AND status = 'survived' ORDER BY id",
                 )?;
                 let rows = stmt
                     .query_map(params![run_id, fp], map_row)?
@@ -202,9 +206,9 @@ impl Database {
                 rows
             }
             (None, false) => {
-                let mut stmt = self
-                    .conn
-                    .prepare("SELECT id, diff, file_path FROM mutants WHERE run_id = ?1")?;
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, diff, file_path, status FROM mutants WHERE run_id = ?1 ORDER BY id",
+                )?;
                 let rows = stmt
                     .query_map(params![run_id], map_row)?
                     .collect::<rusqlite::Result<_>>()?;
@@ -212,8 +216,8 @@ impl Database {
             }
             (None, true) => {
                 let mut stmt = self.conn.prepare(
-                    "SELECT id, diff, file_path FROM mutants \
-                     WHERE run_id = ?1 AND status = 'survived'",
+                    "SELECT id, diff, file_path, status FROM mutants \
+                     WHERE run_id = ?1 AND status = 'survived' ORDER BY id",
                 )?;
                 let rows = stmt
                     .query_map(params![run_id], map_row)?
@@ -223,6 +227,16 @@ impl Database {
         };
 
         Ok(rows)
+    }
+
+    /// Return the commit against which the mutants in `run_id` were generated.
+    pub fn get_run_commit_hash(&self, run_id: i64) -> Result<String> {
+        let commit_hash = self.conn.query_row(
+            "SELECT commit_hash FROM runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        Ok(commit_hash)
     }
 
     /// Update the status and command_to_test for a single mutant.

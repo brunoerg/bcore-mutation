@@ -121,7 +121,12 @@ async fn get_changed_files_bitcoin_core(pr_number: Option<u32>) -> Result<Vec<St
         Err(_) if used_remote == "upstream" => {
             // If upstream diff failed, try origin
             println!("Diff with upstream/master failed, trying origin/master...");
-            let diff_args_origin = &["diff", "--name-only", "origin/master...HEAD"];
+            let diff_args_origin = &[
+                "diff",
+                "--name-only",
+                "--diff-filter=d",
+                "origin/master...HEAD",
+            ];
             run_git_command(diff_args_origin).await
         }
         Err(e) => Err(e),

@@ -46,14 +46,16 @@ pub mod error;
 pub mod git_changes;
 pub mod mutation;
 pub mod operators;
+pub mod parallel;
 pub mod project;
 pub mod report;
+pub mod workspace;
 
 pub use error::{MutationError, Result};
 
 /// Re-export commonly used types
 pub mod prelude {
-    pub use crate::analyze::run_analysis;
+    pub use crate::analyze::{run_analysis, run_analysis_with_options, AnalysisOptions};
     pub use crate::ast_analysis::{AridNodeDetector, AstNode, AstNodeType};
     pub use crate::coverage::parse_coverage_file;
     pub use crate::error::{MutationError, Result};
