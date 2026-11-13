@@ -72,8 +72,14 @@ impl OperatorSet for BitcoinCore {
             (r" \+ ", " / "),
             (r"\((-?\d+)\)", r"($1 - 1)"),
             (r"\((-?\d+)\)", r"($1 + 1)"),
-            (r"\b(if|else\s+if|while)\s*\(([^()]*)\)", r"$1 (1==1)"),
-            (r"\b(if|else\s+if|while)\s*\(([^()]*)\)", r"$1 (1==0)"),
+            (
+                r"\b(if|else\s+if|while)\s*\(((?:[^()]|\([^()]*\))*)\)",
+                r"$1 (1==1)",
+            ),
+            (
+                r"\b(if|else\s+if|while)\s*\(((?:[^()]|\([^()]*\))*)\)",
+                r"$1 (1==0)",
+            ),
             (r".*\berase\(.+", ""),
             (
                 r"^\s*[a-zA-Z_]\w*(?:::[a-zA-Z_]\w*)*(?:(?:->|\.)[a-zA-Z_]\w*)*\s*\([^;]*\)\s*;$",
@@ -361,5 +367,22 @@ mod tests {
                 .replace("    while (it != end) {", &op.replacement),
             "    while (it != end) {break;"
         );
+    }
+
+    #[test]
+    fn test_if_condition_with_function_call() {
+        let op = find_op(r"(if|else\s+if|while)");
+        assert_eq!(
+            op.pattern
+                .replace("        if (pfrom.IsInboundConn()) {", &op.replacement),
+            "        if (1==1) {"
+        );
+        assert_eq!(
+            op.pattern.replace("    if (x > 5) {", &op.replacement),
+            "    if (1==1) {"
+        );
+
+        // Test deeper nesting is still not mutated
+        assert!(!op.pattern.is_match("    if (f(g(x))) {"));
     }
 }
