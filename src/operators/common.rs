@@ -53,8 +53,14 @@ pub(crate) fn regex_operators() -> Vec<(&'static str, &'static str)> {
         (r" \+ ", " / "),
         (r"\((-?\d+)\)", r"($1 - 1)"),
         (r"\((-?\d+)\)", r"($1 + 1)"),
-        (r"\b(if|else\s+if|while)\s*\(([^()]*)\)", r"$1 (1==1)"),
-        (r"\b(if|else\s+if|while)\s*\(([^()]*)\)", r"$1 (1==0)"),
+        (
+            r"\b(if|else\s+if|while)\s*\(((?:[^()]|\([^()]*\))*)\)",
+            r"$1 (1==1)",
+        ),
+        (
+            r"\b(if|else\s+if|while)\s*\(((?:[^()]|\([^()]*\))*)\)",
+            r"$1 (1==0)",
+        ),
         (
             r"^\s*[a-zA-Z_]\w*(?:::[a-zA-Z_]\w*)*(?:(?:->|\.)[a-zA-Z_]\w*)*\s*\([^;]*\)\s*;$",
             "",
@@ -192,5 +198,24 @@ mod tests {
             re.replace("    while (i < n) {", rep),
             "    while (i < n) {break;"
         );
+    }
+
+    fn if_condition_op() -> (regex::Regex, &'static str) {
+        let (pattern, replacement) = regex_operators()
+            .into_iter()
+            .find(|(pattern, _)| pattern.contains(r"(if|else\s+if|while)"))
+            .expect("if condition operator present");
+        (regex::Regex::new(pattern).unwrap(), replacement)
+    }
+
+    #[test]
+    fn if_condition_with_function_call() {
+        let (re, rep) = if_condition_op();
+        assert_eq!(
+            re.replace("        if (pfrom.IsInboundConn()) {", rep),
+            "        if (1==1) {"
+        );
+        assert_eq!(re.replace("    if (x > 5) {", rep), "    if (1==1) {");
+        assert!(!re.is_match("    if (f(g(x))) {"));
     }
 }
