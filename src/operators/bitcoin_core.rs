@@ -172,6 +172,7 @@ impl OperatorSet for BitcoinCore {
             "LogInfo",
             "strprintf",
             "G_FUZZING",
+            "TRACEPOINT",
             // no-op for FindAndDelete
             "if (nFound > 0)",
         ]
