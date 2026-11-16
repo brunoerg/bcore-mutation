@@ -598,6 +598,13 @@ mod tests {
         assert!(should_skip_line("assert(condition);", "test.cpp", false, ops).unwrap());
         assert!(should_skip_line("LogPrintf(\"test\");", "test.cpp", false, ops).unwrap());
         assert!(should_skip_line("LogDebug(\"test\");", "test.cpp", false, ops).unwrap());
+        assert!(should_skip_line(
+            "TRACEPOINT_SEMAPHORE(validation, block_connected);",
+            "test.cpp",
+            false,
+            ops
+        )
+        .unwrap());
 
         // Test normal lines that shouldn't be skipped
         assert!(!should_skip_line("int x = 5;", "test.cpp", false, ops).unwrap());
